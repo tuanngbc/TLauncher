@@ -1334,9 +1334,9 @@ private:
                 }
                 if(glassAlpha!=alpha){SetLayeredWindowAttributes(glass,0,BYTE(alpha),LWA_ALPHA);glassAlpha=alpha;}
                 if(repaint){BOOL theme=dark;DwmSetWindowAttribute(glass,20,&theme,sizeof(theme));}
-                ShowWindow(glass,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
+                if(IsWindowVisible(glass)!=(hidden<=.999))ShowWindow(glass,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
             }
-            ShowWindow(surface.fin,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
+            if(IsWindowVisible(surface.fin)!=(hidden<=.999))ShowWindow(surface.fin,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
             if(hovered>=0&&size_t(hovered)<d.voci.size()&&pressed<0&&menu::aperti==0&&d.anteprimeAccese&&!d.voci[hovered].finestre.empty()){
                 if(!previewAt)previewAt=now;
                 if(now-previewAt>=500&&(!preview.aperta()||preview.icona()!=hovered)){
@@ -1691,9 +1691,10 @@ private:
 
     HWND creaVetro(HINSTANCE inst) {
         HWND v = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
-                                 L"TLauncher.Native.DockVetro", L"", WS_POPUP | WS_THICKFRAME, 0, 0, 10, 10, nullptr, nullptr, inst, nullptr);
+                                 L"TLauncher.Native.DockVetro", L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr, inst, nullptr);
         SetLayeredWindowAttributes(v, 0, 255, LWA_ALPHA);
         const COLORREF noBorder=0xfffffffeu;DwmSetWindowAttribute(v,34,&noBorder,sizeof(noBorder));
+        const int noNonClient=1;DwmSetWindowAttribute(v,DWMWA_NCRENDERING_POLICY,&noNonClient,sizeof(noNonClient));
         MARGINS mg{-1, -1, -1, -1}; DwmExtendFrameIntoClientArea(v, &mg);
         BOOL scuro = temaScuro(); DwmSetWindowAttribute(v, DWMWA_USE_IMMERSIVE_DARK_MODE, &scuro, sizeof(scuro));
         int tipo = 3; DwmSetWindowAttribute(v, DWMWA_SYSTEMBACKDROP_TYPE, &tipo, sizeof(tipo));
