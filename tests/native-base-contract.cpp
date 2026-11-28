@@ -11,6 +11,17 @@ static void ciPump(int ms) {
 }
 #include "native-phase3-contract.h"
 int main(int argc,char** argv) {
+    AddVectoredExceptionHandler(1,[](EXCEPTION_POINTERS* info)->LONG{
+        const DWORD code=info->ExceptionRecord->ExceptionCode;
+        if(code==EXCEPTION_ACCESS_VIOLATION||code==EXCEPTION_STACK_OVERFLOW||code==0xe06d7363){
+            const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+            fprintf(stderr,"NATIVE_EXCEPTION code=%08lx address=%p offset=%llx\n",code,info->ExceptionRecord->ExceptionAddress,
+                (unsigned long long)(reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress)-base));
+            void* frames[32]{};const auto count=CaptureStackBackTrace(0,32,frames,nullptr);
+            for(USHORT i=0;i<count;++i)fprintf(stderr,"NATIVE_FRAME %llx\n",(unsigned long long)(reinterpret_cast<uintptr_t>(frames[i])-base));
+            fflush(stderr);
+        }return EXCEPTION_CONTINUE_SEARCH;
+    });
     if((argc!=2&&argc!=3)||!tlauncher::validateTrial())return 10;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     OleInitialize(nullptr);
@@ -24,7 +35,8 @@ int main(int argc,char** argv) {
         if(!c.enabled||c.scene!=wallpaper::sceneIndex("lake")||c.fps!=29||c.layout!=wallpaper::Layout::Panorama)return 84;
         if(!s.stage.enabled||c.resolution!=.75f||c.pauseCovered||c.weather!=wallpaper::WeatherMode::Offline||c.clockLighting||c.manualHour!=17.25f||std::abs(c.wind-1.4f)>.001f||wallpaper::parameter(c,c.scene,"depth")!=321)return 118;
         if(c.displays.empty())return 119;for(const auto& entry:c.displays){const auto& a=entry.second;if(!a.enabled||a.scene!=wallpaper::sceneIndex("aquarium")||a.sceneParams.at("aquarium").at("fish")!=6)return 120;}
-        gImpostazioni.apri();ciPump(350);if(!FindWindowW(L"TLauncher.Native.Impostazioni",nullptr))return 85;
+        fprintf(stderr,"MIGRATED_SETTINGS_OPEN_BEGIN\n");fflush(stderr);
+        gImpostazioni.apri();fprintf(stderr,"MIGRATED_SETTINGS_OPEN_RETURNED\n");fflush(stderr);ciPump(350);if(!FindWindowW(L"TLauncher.Native.Impostazioni",nullptr))return 85;
         if(!phase3Snapshot(FindWindowW(L"TLauncher.Native.Impostazioni",nullptr),std::filesystem::path(argv[1])/L"phase3-migrated-vietnamese-settings.bmp"))return 86;
         report<<"MIGRATED_CUSTOM_NATIVE_SETTINGS_READ=PASS\nMIGRATED_WALLPAPER_READ=PASS\nVIETNAMESE_NATIVE_SETTINGS_RENDER=PASS\n";report.close();ExitProcess(0);
     }
