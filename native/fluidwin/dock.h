@@ -1185,7 +1185,7 @@ private:
                 }
                 const double bounce=v.sobbalzoDopo>=0?time+v.sobbalzoDopo:v.sobbalzoT0;
                 if(bounce>=0&&time>=bounce&&time-bounce<=.6){const double e=time-bounce;jump+=std::abs(std::sin(e*M_PI/.2))*icon*.14*v.sobbalzoAmp*std::exp(-e*5.5);moving=true;}
-                RECT target=side(monitorRect,edge,int(along),margin+pad+icon-int(size+jump),int(size),int(size));along+=size+gap;
+                RECT target=side(monitorRect,edge,int(along),margin+pad+int(jump),int(size),int(size));along+=size+gap;
                 if(dragging&&int(i)==pressed){const int dx=dragPoint.x-(target.left+target.right)/2,dy=dragPoint.y-(target.top+target.bottom)/2;OffsetRect(&target,dx,dy);}
                 if(!pose.ready){pose.x=target.left;pose.y=target.top;pose.size=size;pose.ready=true;}
                 moving|=d.molla(pose.x,pose.vx,target.left,340,.8,.05,frame);
@@ -2773,7 +2773,8 @@ private:
         if (lente > 0.001 && rettTesta.right > rettTesta.left && mouseDentro) {
             // distanza dal bordo piu' vicino, 0 sopra la capsula: e' larga, e dal centro (come un'icona) i tasti a destra
             // la facevano rimpicciolire mentre ci si andava sopra
-                const float fuori = std::max({0.0f, rettTesta.left - mouseX, mouseX - rettTesta.right});
+            const float raggio = S * 2.6f;
+            const float fuori = std::max({0.0f, rettTesta.left - mouseX, mouseX - rettTesta.right});
             const float dist = std::min(fuori / raggio, 1.0f);
             const float kk = (std::cos(dist * (float)M_PI) + 1) / 2;
             scTesta = 1 + (M / S - 1) * kk * (float)lente;
