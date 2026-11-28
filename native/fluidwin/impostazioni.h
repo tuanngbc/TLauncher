@@ -1578,8 +1578,14 @@ private:
                 }
                 y += rs.bottom - rs.top + 6 * d;
             }
-            {std::ifstream build(([]{wchar_t p[32768]{};GetModuleFileNameW(nullptr,p,DWORD(std::size(p)));return std::filesystem::path(p).parent_path();}())/L"BUILD-COMMIT.txt");
-             std::string sha;std::getline(build,sha);if(!sha.empty())riga(L"Commit",std::wstring(sha.begin(),sha.end()));}
+            {static const std::wstring commit=[]{
+                std::vector<wchar_t> path(32768);
+                const auto n=GetModuleFileNameW(nullptr,path.data(),DWORD(path.size()));
+                if(!n||n>=path.size())return std::wstring{};
+                std::ifstream build(std::filesystem::path(path.data()).parent_path()/L"BUILD-COMMIT.txt");
+                std::string sha;std::getline(build,sha);if(!sha.empty()&&sha.back()=='\r')sha.pop_back();
+                return std::wstring(sha.begin(),sha.end());
+             }();if(!commit.empty())riga(L"Commit",commit);}
             riga(L"TLauncher" + (ver.empty() ? std::wstring() : L" " + ver), L"Your Windows. Your Workspace.");
             riga(L"FluidWin 1.3.1 · Copyright (c) 2026 Clooudy", L"MIT · github.com/clooudfn/FluidWin · native desktop foundation");
             riga(L"TLauncher · GPL-3.0", L"tuanngbc/TLauncher · BLEZZ0102/Deskland · nhhoang188/Deskland-VN");
