@@ -81,7 +81,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: native-build
-          key: native-base-ucrt64-unicode-v2-${{ hashFiles('native/fluidwin/*.h','native/fluidwin/fluidwin.cpp','native/fluidwin/icona.rc','native/fluidwin/icona.ico','native/fluidwin/sfondi/*.jpg','native/wallpaper/**','tests/native-base-contract.cpp','tests/native-phase3-contract.h','tests/wallpaper-accessibility.cpp') }}
+          key: native-base-ucrt64-unicode-v2-${{ hashFiles('native/fluidwin/*.h','native/fluidwin/fluidwin.cpp','native/fluidwin/icona.rc','native/fluidwin/icona.ico','native/fluidwin/sfondi/*.jpg','native/wallpaper/**','tests/native-base-contract.cpp','tests/native-phase3-contract.h','tests/clock-v102-reference.h','tests/wallpaper-accessibility.cpp','.github/workflows/build-rust-test.yml') }}
       - uses: msys2/setup-msys2@v2
         if: steps.native-cache.outputs.cache-hit != 'true'
         with:
@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p native-build native-evidence
-          libs='-ld3d11 -ldxgi -ldcomp -ld3dcompiler -ld2d1 -ldwrite -ldwmapi -luser32 -lgdi32 -lshell32 -lole32 -loleaut32 -lversion -lpropsys -luuid -liphlpapi -lwindowscodecs -lruntimeobject -lpowrprof -lshlwapi -lshcore -lsetupapi -lwinmm -ldxva2 -lwinhttp -lcomdlg32 -lbcrypt -lopengl32 -lwtsapi32 -loleacc -lnormaliz -lpdh'
+          libs='-ld3d11 -ldxgi -ldcomp -ld3dcompiler -ld2d1 -ldwrite -ldwmapi -luser32 -lgdi32 -lshell32 -lole32 -loleaut32 -lversion -lpropsys -luuid -liphlpapi -lwindowscodecs -lruntimeobject -lpowrprof -lshlwapi -lshcore -lsetupapi -lwinmm -ldxva2 -lwinhttp -lcomdlg32 -lbcrypt -lopengl32 -lwtsapi32 -loleacc -lnormaliz -lpdh -lusp10'
           (cd native/fluidwin && windres icona.rc -O coff -o ../../native-build/icon.o)
           g++ -O2 -std=gnu++20 -Wall -municode -mwindows native/fluidwin/fluidwin.cpp native-build/icon.o -o native-build/TLauncher.exe $libs -static
           g++ -O2 -std=gnu++20 -Wall -DUNICODE -D_UNICODE tests/native-base-contract.cpp native-build/icon.o -o native-build/native-contract.exe $libs -static
@@ -116,7 +116,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: native-build
-          key: native-base-ucrt64-unicode-v2-${{ hashFiles('native/fluidwin/*.h','native/fluidwin/fluidwin.cpp','native/fluidwin/icona.rc','native/fluidwin/icona.ico','native/fluidwin/sfondi/*.jpg','native/wallpaper/**','tests/native-base-contract.cpp','tests/native-phase3-contract.h','tests/wallpaper-accessibility.cpp') }}
+          key: native-base-ucrt64-unicode-v2-${{ hashFiles('native/fluidwin/*.h','native/fluidwin/fluidwin.cpp','native/fluidwin/icona.rc','native/fluidwin/icona.ico','native/fluidwin/sfondi/*.jpg','native/wallpaper/**','tests/native-base-contract.cpp','tests/native-phase3-contract.h','tests/clock-v102-reference.h','tests/wallpaper-accessibility.cpp','.github/workflows/build-rust-test.yml') }}
       - name: Verify real profile, Notch resources, native startup and Guardian recovery
         shell: pwsh
         run: |

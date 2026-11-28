@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 #include <windowsx.h>
+#include <usp10.h>
+#include <fstream>
+#include <unordered_set>
 
 namespace desktopclock {
 struct Settings {
@@ -34,6 +37,7 @@ inline std::vector<Monitor> monitors() {
     },reinterpret_cast<LPARAM>(&result));
     return result;
 }
+inline std::array<int,4> fontRegistrations{};
 inline void registerFonts() {
     static bool loaded=false;
     if(loaded)return;
@@ -42,8 +46,9 @@ inline void registerFonts() {
     const DWORD length=GetModuleFileNameW(nullptr,executable,DWORD(std::size(executable)));
     if(!length||length>=std::size(executable))return;
     const auto base=std::filesystem::path(executable).parent_path()/L"assets"/L"widget";
+    size_t index=0;
     for(const auto* file:{L"steelfish rg.ttf",L"steelfish rg it.ttf",L"la Compagnie des Ombres.ttf",L"Gravity-Light.ttf"})
-        AddFontResourceExW((base/file).c_str(),FR_PRIVATE,nullptr);
+        fontRegistrations[index++]=AddFontResourceExW((base/file).c_str(),FR_PRIVATE,nullptr);
 }
 inline HWND desktopHost() {
     HWND result=nullptr;
@@ -64,6 +69,14 @@ public:
     Clock& operator=(const Clock&)=delete;
     ~Clock(){stop();}
     std::function<void(const Settings&)> moved;
+    std::function<void(const std::wstring&)> diagnostic;
+#ifdef TLAUNCHER_NATIVE_CI
+    SYSTEMTIME frozen{};
+    std::vector<unsigned> ciPixels;
+    SIZE ciSize{};
+    std::vector<std::wstring> ciFaces;
+    int ciFallbacks=0;
+#endif
 
     void configure(const Settings& next,bool second,bool refresh=false) {
         if(!refresh&&next==config&&hwnd&&language==testi::attuale())return;
@@ -122,6 +135,7 @@ private:
     int language=-1;
     bool dragging=false,secondClock=false;
     POINT anchor{},origin{};
+    std::unordered_set<std::wstring> loggedFaces;
 
     static LRESULT CALLBACK procedure(HWND h,UINT msg,WPARAM w,LPARAM l) {
         if(msg==WM_NCCREATE)SetWindowLongPtrW(h,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams));
@@ -167,12 +181,19 @@ private:
     void render() {
         if(!hwnd)return;
         SYSTEMTIME time{};GetLocalTime(&time);
+#ifdef TLAUNCHER_NATIVE_CI
+        if(frozen.wYear)time=frozen;
+        ciFaces.clear();ciFallbacks=0;
+#endif
         const int interval=config.seconds?1000-time.wMilliseconds:60000-time.wSecond*1000-time.wMilliseconds;
         SetTimer(hwnd,1,UINT(std::max(20,interval)),nullptr);
         if(dragging)return;
 
         UINT dpi=96,yDpi=96;
         if(FAILED(GetDpiForMonitor(screen.handle,MDT_EFFECTIVE_DPI,&dpi,&yDpi)))dpi=96;
+        #ifdef TLAUNCHER_NATIVE_CI
+        if(frozen.wYear)dpi=96;
+#endif
         const float scale=config.scale*dpi/9600.f;
         HDC screenDC=GetDC(nullptr);
         if(!screenDC)return;
@@ -189,9 +210,9 @@ private:
         }else GetDateFormatEx(testi::locale(),0,&time,L"d MMMM yyyy",date,128,nullptr);
         if(config.style==0)CharUpperBuffW(date,DWORD(wcslen(date)));
         const bool classic=config.style==0;
-        const wchar_t* straight=config.font.empty()?(classic?L"Steelfish Rg":L"Gravity Light"):config.font.c_str();
+        const wchar_t* straight=config.font.empty()?(classic?L"Steelfish Rg":L"Gravity"):config.font.c_str();
         const wchar_t* script=config.font.empty()&&classic?L"la Compagnie des Ombres":straight;
-        struct Run {const wchar_t* text;HFONT font;COLORREF color;RECT rect;};
+        struct Run {const wchar_t* text;HFONT font;COLORREF color;RECT rect;SCRIPT_STRING_ANALYSIS shaping=nullptr;};
         std::vector<Run> runs;
         RECT canvas{0,0,LONG(320*scale),LONG((config.date?(classic?230:135):105)*scale)};
         const auto layout=[&](const wchar_t* value,const wchar_t* face,int size,int base,COLORREF color){
@@ -200,14 +221,27 @@ private:
                 OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,ANTIALIASED_QUALITY,DEFAULT_PITCH,face);
             if(!font)return;
             const auto previous=SelectObject(dc,font);SIZE extent{};
-            GetTextExtentPoint32W(dc,value,int(wcslen(value)),&extent);SelectObject(dc,previous);
+            wchar_t selected[LF_FACESIZE]{};GetTextFaceW(dc,LF_FACESIZE,selected);
+            std::vector<WORD> glyphs(wcslen(value));
+            const DWORD glyphResult=GetGlyphIndicesW(dc,value,int(glyphs.size()),glyphs.data(),GGI_MARK_NONEXISTING_GLYPHS);
+            SCRIPT_STRING_ANALYSIS shaping=nullptr;
+            const bool missing=glyphResult==GDI_ERROR||std::find(glyphs.begin(),glyphs.end(),WORD(0xffff))!=glyphs.end();
+            if(missing)ScriptStringAnalyse(dc,value,int(wcslen(value)),0,-1,SSA_GLYPHS|SSA_FALLBACK|SSA_LINK,0,nullptr,nullptr,nullptr,nullptr,nullptr,&shaping);
+            if(shaping)extent=*ScriptString_pSize(shaping);
+            else GetTextExtentPoint32W(dc,value,int(wcslen(value)),&extent);
+            const auto message=std::wstring(L"clock requested=")+face+L" selected="+selected+(missing?L" glyph-link=required":L" glyph-link=none");
+            if(diagnostic&&loggedFaces.insert(message).second)diagnostic(message);
+#ifdef TLAUNCHER_NATIVE_CI
+            ciFaces.push_back(selected);if(shaping)++ciFallbacks;
+#endif
+            SelectObject(dc,previous);
             const LONG halfWidth=(std::max(1L,extent.cx)+1)/2;
             const LONG center=classic?120:canvas.right/2,top=LONG(base*scale);
             RECT rect{center-halfWidth,top,center+halfWidth,top+px+8};
             const LONG padding=classic?std::max(8,px):8;
             canvas.left=std::min(canvas.left,rect.left-padding);canvas.top=std::min(canvas.top,rect.top-padding);
             canvas.right=std::max(canvas.right,rect.right+padding);canvas.bottom=std::max(canvas.bottom,rect.bottom+padding);
-            runs.push_back({value,font,color,rect});
+            runs.push_back({value,font,color,rect,shaping});
         };
         layout(hour,straight,classic?100:70,0,config.color);
         if(config.date){
@@ -221,7 +255,7 @@ private:
         HBITMAP bitmap=CreateDIBSection(screenDC,&info,DIB_RGB_COLORS,&data,nullptr,0);
         if(!bitmap||!data){
             if(bitmap)DeleteObject(bitmap);
-            for(const auto& run:runs)DeleteObject(run.font);
+            for(auto& run:runs){if(run.shaping)ScriptStringFree(&run.shaping);DeleteObject(run.font);}
             DeleteDC(dc);ReleaseDC(nullptr,screenDC);
             return;
         }
@@ -232,7 +266,11 @@ private:
         for(auto& run:runs){
             RECT rect=run.rect;OffsetRect(&rect,-canvas.left,-canvas.top);
             const auto previous=SelectObject(dc,run.font);SetTextColor(dc,run.color);
-            DrawTextW(dc,run.text,-1,&rect,DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX|DT_NOCLIP);
+            if(run.shaping){
+                const SIZE extent=*ScriptString_pSize(run.shaping);
+                ScriptStringOut(run.shaping,(rect.left+rect.right-extent.cx)/2,(rect.top+rect.bottom-extent.cy)/2,0,nullptr,0,0,FALSE);
+                ScriptStringFree(&run.shaping);
+            }else DrawTextW(dc,run.text,-1,&rect,DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX|DT_NOCLIP);
             SelectObject(dc,previous);DeleteObject(run.font);
         }
         GdiFlush();
@@ -241,6 +279,9 @@ private:
             const unsigned alpha=std::max({rgb&255,(rgb>>8)&255,rgb>>16});
             pixels[i]=rgb|(alpha<<24);
         }
+#ifdef TLAUNCHER_NATIVE_CI
+        ciPixels.assign(pixels,pixels+size_t(width)*height);ciSize={width,height};
+#endif
         const auto& area=screen.area;
         POINT pos{area.left+(config.x==-1?(area.right-area.left-width)/2:config.x),
                   area.top+(config.y==-1?int((secondClock&&screen.primary?300:70)*scale):config.y)};

@@ -1053,17 +1053,42 @@ private:
         Motore* owner;
         HMONITOR display;
         ::vetro::Finestra surface;
-        RECT monitorRect{},bounds{},bar{},screenRect{};
+        RECT monitorRect{},bounds{},bar{},screenRect{},glassBounds{};int glassRadius=-1,glassAlpha=-1;
         D2D1_ROUNDED_RECT shape{};
-        std::vector<std::pair<size_t,RECT>> slots;
+        std::vector<std::pair<size_t,RECT>> slots,restSlots;
         std::vector<std::wstring> identities;
         std::unordered_map<std::wstring,ID2D1Bitmap*> bitmaps;
         int hovered=-1,radius=-1,lastAlpha=-1;
         bool dark=false,active=false,full=false;
         ULONGLONG hoverAt=0,leftAt=0,revealUntil=0,last=0;
-        double collapsed=0;
+        double collapsed=0,collapseVelocity=0,lens=0,lensVelocity=0,hidden=0,hideVelocity=0;
+        struct Pose {double x=0,y=0,size=0,vx=0,vy=0,vs=0;bool ready=false;};
+        std::unordered_map<std::wstring,Pose> poses;
+        anteprime::Anteprime preview;
+        HWND glass=nullptr;IDropTarget* drop=nullptr;
+        int pressed=-1;std::wstring pressedIdentity;POINT pressPoint{},dragPoint{};
+        bool dragging=false,moving=false;ULONGLONG previewAt=0,previewLeft=0;
+        static constexpr UINT pulse=71;
+        void wake(){vetro::battito(surface.fin,pulse);}
+        void initialize(){
+            const COLORREF noBorder=0xfffffffeu;DwmSetWindowAttribute(surface.fin,34,&noBorder,sizeof(noBorder));
+            glass=owner->creaVetro(GetModuleHandleW(nullptr));
+            drop=owner->extraDrop([this](POINT p){hovered=hit(p);wake();return hovered;},
+                [this]{hovered=-1;wake();});
+            if(FAILED(RegisterDragDrop(surface.fin,drop))){drop->Release();drop=nullptr;}
+            preview.scegli=[this](HWND h){if(IsWindow(h))owner->portaDavanti(h);};
+            preview.chiudiFinestra=[this](HWND h){if(!IsWindow(h))return;if(owner->preparaChiusura)owner->preparaChiusura(h);PostMessageW(h,WM_SYSCOMMAND,SC_CLOSE,0);};
+        }
+        void finishDrag(){
+            if(dragging){owner->ricordaOrdine();owner->salvaOrdineFissate();owner->dirty=true;}
+            dragging=false;pressed=-1;pressedIdentity.clear();
+            if(GetCapture()==surface.fin)ReleaseCapture();wake();
+        }
         explicit ExtraDock(Motore* o,HMONITOR m):owner(o),display(m){}
-        ~ExtraDock(){for(auto& [key,b]:bitmaps)b->Release();surface.chiudi();}
+        ~ExtraDock(){vetro::fermaBattito(surface.fin,pulse);KillTimer(surface.fin,pulse);
+            if(drop){RevokeDragDrop(surface.fin);drop->Release();}preview.chiudi();
+            if(glass){DestroyWindow(glass);}
+            for(auto& [key,b]:bitmaps)b->Release();surface.chiudi();}
         static RECT side(RECT r,int edge,int along,int offset,int width,int height){
             if(edge==1)return {r.left+along,r.top+offset,r.left+along+width,r.top+offset+height};
             if(edge==2)return {r.left+offset,r.top+along,r.left+offset+height,r.top+along+width};
@@ -1075,20 +1100,39 @@ private:
             for(const auto& [i,r]:slots)if(PtInRect(&r,p))return int(i);
             return -1;
         }
-        bool messaggio(HWND h,UINT m,WPARAM,LPARAM l,LRESULT& result){
+        bool messaggio(HWND h,UINT m,WPARAM w,LPARAM l,LRESULT& result){
             result=0;
             if(m==WM_PAINT){draw();return true;}
+            if(m==WM_TIMER&&w==pulse){POINT p{};GetCursorPos(&p);update(p,GetForegroundWindow(),GetTickCount64());return true;}
             if(m==WM_MOUSEACTIVATE){result=MA_NOACTIVATE;return true;}
-            if(m==WM_MOUSEMOVE||m==WM_LBUTTONUP||m==WM_RBUTTONUP){
+            if(m==WM_CAPTURECHANGED){finishDrag();return true;}
+            if(m==WM_MOUSELEAVE){hovered=-1;previewAt=0;wake();return true;}
+            if(m==WM_MOUSEMOVE||m==WM_LBUTTONDOWN||m==WM_LBUTTONUP||m==WM_RBUTTONUP){
                 POINT pt{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ClientToScreen(h,&pt);
-                const int i=hit(pt);
-                if(m==WM_MOUSEMOVE){if(i!=hovered){hovered=i;InvalidateRect(h,nullptr,FALSE);}return true;}
+                const int i=hit(pt);dragPoint=pt;
+                if(m==WM_MOUSEMOVE){
+                    TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);
+                    if(i!=hovered){hovered=i;previewAt=GetTickCount64();}wake();
+                    if(pressed>=0){
+                        pressed=-1;
+                        for(size_t k=0;k<owner->voci.size();++k)if(owner->identita(owner->voci[k])==pressedIdentity){pressed=int(k);break;}
+                        if(pressed<0){finishDrag();return true;}
+                        if(!dragging&&owner->trascinabile(pressed)&&(std::abs(pt.x-pressPoint.x)>GetSystemMetrics(SM_CXDRAG)||std::abs(pt.y-pressPoint.y)>GetSystemMetrics(SM_CYDRAG))){dragging=true;preview.chiudi();}
+                        if(dragging&&i>=0&&i!=pressed){
+                            const auto [a,b]=owner->gruppo(pressed);
+                            if(size_t(i)>=a&&size_t(i)<b){std::swap(owner->voci[pressed],owner->voci[i]);pressed=i;owner->ricordaOrdine();owner->dirty=true;}
+                        }
+                    }return true;
+                }
+                if(m==WM_LBUTTONDOWN){pressed=i;pressPoint=pt;if(i>=0){pressedIdentity=owner->identita(owner->voci[i]);SetCapture(h);}wake();return true;}
+                if(m==WM_LBUTTONUP){const bool click=!dragging&&pressed==i;finishDrag();if(!click)return true;}
                 if(i<0||i>=int(owner->voci.size()))return true;
+                preview.chiudi();
                 if(m==WM_RBUTTONUP)owner->menu(i,pt);
                 else if(owner->voci[i].avvio==AVVIO_LAUNCHER||owner->voci[i].avvio==AVVIO_CONTROLLO)
                     PostMessageW(owner->icone,WM_APP+66,WPARAM(i),reinterpret_cast<LPARAM>(display));
                 else owner->clic(i);
-                return true;
+                wake();return true;
             }
             return false;
         }
@@ -1099,7 +1143,9 @@ private:
             auto& d=*owner;
             const int edge=d.lato;
             const bool vertical=edge>=2;
-            const float dp=surface.dpi;
+            const float dp=vetro::dpiMonitor(display);surface.dpi=dp;
+            const double frame=std::clamp(last?double(now-last)/1000.:1./60.,.001,.05);
+            moving=false;
             const int length=vertical?monitorRect.bottom-monitorRect.top:monitorRect.right-monitorRect.left;
             const int pad=std::max(2,int(8*dp)),gap=std::max(2,int(d.distanzaIcone*dp)),margin=int(8*dp);
             RECT oldBounds=bounds,oldBar=bar;
@@ -1114,10 +1160,42 @@ private:
             const int room=length-barWidth,inset=std::min(int(12*dp),room/2);
             const int align=d.barAlignment==0?inset:d.barAlignment==2?room-inset:d.barAlignment==3?room*d.barOffset/100:room/2;
             bar=side(monitorRect,edge,align,int(d.barInset*dp),barWidth,std::max(1,int(d.barThickness*dp)));
-            slots.clear();
-            int j=0;
+            const bool lensInside=PtInRect(&bounds,cursor)||hit(cursor)>=0;
+            moving|=d.molla(lens,lensVelocity,lensInside&&!dragging?1.:0.,340,.72,.001,frame);
+            std::vector<float> sizes;float total=2.f*pad;
+            int n=0;
+            for(const auto& v:d.voci)if(!v.uscente){
+                const float center=(length-span)/2.f+pad+n++*step+icon*.5f;
+                const float mouse=float(vertical?cursor.y-monitorRect.top:cursor.x-monitorRect.left);
+                const float size=d.lensSize(float(icon),icon*INGRANDITE,mouse-center,lens);
+                sizes.push_back(size);total+=size+gap;
+            }
+            total=std::max(float(2*pad),total-gap);
+            bounds=side(monitorRect,edge,int((length-total)/2),margin,int(total),thick);
+            slots.clear();restSlots.clear();
+            std::unordered_set<std::wstring> livePoses;
+            int j=0;float along=(length-total)/2.f+pad;
+            const double time=adesso();
             for(size_t i=0;i<d.voci.size();++i){const auto& v=d.voci[i];if(v.uscente)continue;
-                slots.push_back({i,side(monitorRect,edge,(length-span)/2+pad+j++*step,margin+pad,icon,icon)});
+                const auto identity=d.identita(v);livePoses.insert(identity);auto& pose=poses[identity];
+                restSlots.push_back({i,side(monitorRect,edge,(length-span)/2+pad+j*step,margin+pad,icon,icon)});
+                const float size=sizes[j++];double jump=0;
+                if(v.rimbalzoT0>=0&&time-v.rimbalzoT0>=0&&time-v.rimbalzoT0<=3){
+                    const double e=time-v.rimbalzoT0;jump=std::abs(std::sin(e*M_PI/.55))*icon*.45*std::exp(-e*.35);moving=true;
+                }
+                const double bounce=v.sobbalzoDopo>=0?time+v.sobbalzoDopo:v.sobbalzoT0;
+                if(bounce>=0&&time>=bounce&&time-bounce<=.6){const double e=time-bounce;jump+=std::abs(std::sin(e*M_PI/.2))*icon*.14*v.sobbalzoAmp*std::exp(-e*5.5);moving=true;}
+                RECT target=side(monitorRect,edge,int(along),margin+pad+icon-int(size+jump),int(size),int(size));along+=size+gap;
+                if(dragging&&int(i)==pressed){const int dx=dragPoint.x-(target.left+target.right)/2,dy=dragPoint.y-(target.top+target.bottom)/2;OffsetRect(&target,dx,dy);}
+                if(!pose.ready){pose.x=target.left;pose.y=target.top;pose.size=size;pose.ready=true;}
+                moving|=d.molla(pose.x,pose.vx,target.left,340,.8,.05,frame);
+                moving|=d.molla(pose.y,pose.vy,target.top,340,.8,.05,frame);
+                moving|=d.molla(pose.size,pose.vs,size,340,.8,.05,frame);
+                slots.push_back({i,{LONG(std::lround(pose.x)),LONG(std::lround(pose.y)),LONG(std::lround(pose.x+pose.size)),LONG(std::lround(pose.y+pose.size))}});
+            }
+            std::erase_if(poses,[&](const auto& p){return !livePoses.count(p.first);});
+            j=0;
+            for(size_t i=0;i<d.voci.size();++i){const auto& v=d.voci[i];if(v.uscente)continue;
                 auto source=v.avvio==AVVIO_LAUNCHER?d.startSource:d.sorgenteIcona(v);
                 keys.push_back(source+L"|"+std::to_wstring(v.finestre.size()));
                 if(!source.empty())sources.insert(source);
@@ -1139,29 +1217,34 @@ private:
                 covered=IsZoomed(foreground)||IntersectRect(&overlap,&bounds,&window);
             }
             const bool atEdge=PtInRect(&monitorRect,cursor)&&d.sulBordo(cursor,monitorRect);
-            const bool inside=PtInRect(&screenRect,cursor)||atEdge;
+            const bool inside=PtInRect(&bounds,cursor)||hit(cursor)>=0||atEdge||preview.mouseSopra()||dragging;
             if(inside){if(!hoverAt)hoverAt=now;leftAt=0;}else{hoverAt=0;if(!leftAt)leftAt=now;}
             if((hoverAt&&now-hoverAt>=ULONGLONG(d.barOpenDelay))||now<revealUntil)active=true;
             if(leftAt&&now-leftAt>=ULONGLONG(d.barCloseDelay)&&now>=revealUntil)active=false;
             full=fullscreen;
             const bool invisible=fullscreen&&!(d.visibilityMode==2&&d.barFullscreen);
-            if(invisible||(covered&&d.visibilityMode==1&&!active)){
-                if(IsWindowVisible(surface.fin))ShowWindow(surface.fin,SW_HIDE);
-                return;
-            }
+            const bool hide=invisible||(covered&&d.visibilityMode==1&&!active);
+            moving|=d.molla(hidden,hideVelocity,hide?1.:0.,hide?260:340,hide?.9:.42,.001,frame);
             const double target=((fullscreen&&d.barFullscreen)||(d.visibilityMode==2&&covered&&!active))?1.:0.;
             const double before=collapsed;
-            collapsed+=std::clamp(target-collapsed,-.25,.25)*std::clamp((now-last)/70.,.15,1.);
-            if(std::abs(target-collapsed)<.003)collapsed=target;
+            moving|=d.molla(collapsed,collapseVelocity,target,340,1.,.001,frame);
+            collapsed=std::clamp(collapsed,0.,1.);
             last=now;full=fullscreen;
             RECT next{};
             const auto blend=[&](LONG a,LONG b){return LONG(std::lround(a+(b-a)*collapsed));};
             next={blend(bounds.left,bar.left),blend(bounds.top,bar.top),blend(bounds.right,bar.right),blend(bounds.bottom,bar.bottom)};
             // The surface covers the expanded area during motion so its icons fade instead of getting clipped early.
-            if(collapsed<1)UnionRect(&next,&next,&bounds);
+            if(collapsed<1){
+                UnionRect(&next,&next,&bounds);
+                for(const auto& [i,r]:slots)UnionRect(&next,&next,&r);
+            }
+            const int slide=int((thick+margin)*hidden);
+            const int dx=edge==2?-slide:edge==3?slide:0,dy=edge==1?-slide:edge==0?slide:0;
+            OffsetRect(&next,dx,dy);
+            for(auto& [i,r]:slots)OffsetRect(&r,dx,dy);
             const float corner=(d.dockRadius<0?raggio::vetro():d.dockRadius)*dp;
             const int newRadius=std::max(0,int(std::lround(corner+(d.barRadius*dp-corner)*collapsed)));
-            bool repaint=before!=collapsed||keys!=identities||!EqualRect(&oldBounds,&bounds)||!EqualRect(&oldBar,&bar)||dark!=d.temaScuro();
+            bool repaint=moving||before!=collapsed||keys!=identities||!EqualRect(&oldBounds,&bounds)||!EqualRect(&oldBar,&bar)||dark!=d.temaScuro();
             identities=std::move(keys);
             if(dark!=d.temaScuro()){surface.aggiornaTema();dark=surface.scuro;}
             if(!inside&&hovered!=-1){hovered=-1;repaint=true;}
@@ -1169,16 +1252,42 @@ private:
                 screenRect=next;radius=newRadius;
                 const int w=next.right-next.left,h=next.bottom-next.top;
                 surface.posiziona(next.left,next.top,w,h);
-                const int diameter=std::min(newRadius*2,std::min(w,h));
-                HRGN clip=diameter?CreateRoundRectRgn(0,0,w,h,diameter,diameter):CreateRectRgn(0,0,w,h);
-                if(clip&&!SetWindowRgn(surface.fin,clip,FALSE))DeleteObject(clip);
                 repaint=true;
             }
-            shape={{float(blend(bounds.left,bar.left)-next.left),float(blend(bounds.top,bar.top)-next.top),
-                    float(blend(bounds.right,bar.right)-next.left),float(blend(bounds.bottom,bar.bottom)-next.top)},float(radius),float(radius)};
+            shape={{float(blend(bounds.left,bar.left)+dx-next.left),float(blend(bounds.top,bar.top)+dy-next.top),
+                    float(blend(bounds.right,bar.right)+dx-next.left),float(blend(bounds.bottom,bar.bottom)+dy-next.top)},float(radius),float(radius)};
             const int alpha=int(std::lround(255*(d.opacita+(d.barOpacity/100.f-d.opacita)*collapsed)));
             if(alpha!=lastAlpha){lastAlpha=alpha;surface.alfa(alpha/255.0);}
-            if(!IsWindowVisible(surface.fin))ShowWindow(surface.fin,SW_SHOWNOACTIVATE);
+            RECT glassRect{LONG(shape.rect.left+next.left),LONG(shape.rect.top+next.top),LONG(shape.rect.right+next.left),LONG(shape.rect.bottom+next.top)};
+            if(glass){
+                const int w=glassRect.right-glassRect.left,h=glassRect.bottom-glassRect.top;
+                if(!EqualRect(&glassBounds,&glassRect)||glassRadius!=radius){
+                    SetWindowPos(glass,surface.fin,glassRect.left,glassRect.top,w,h,SWP_NOACTIVATE);
+                    HRGN clip=radius?CreateRoundRectRgn(0,0,w,h,std::min(radius*2,w),std::min(radius*2,h)):CreateRectRgn(0,0,w,h);
+                    if(clip&&!SetWindowRgn(glass,clip,FALSE))DeleteObject(clip);
+                    glassBounds=glassRect;glassRadius=radius;
+                }
+                if(glassAlpha!=alpha){SetLayeredWindowAttributes(glass,0,BYTE(alpha),LWA_ALPHA);glassAlpha=alpha;}
+                if(repaint){BOOL theme=dark;DwmSetWindowAttribute(glass,20,&theme,sizeof(theme));}
+                ShowWindow(glass,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
+            }
+            ShowWindow(surface.fin,hidden>.999?SW_HIDE:SW_SHOWNOACTIVATE);
+            if(hovered>=0&&size_t(hovered)<d.voci.size()&&pressed<0&&menu::aperti==0&&d.anteprimeAccese&&!d.voci[hovered].finestre.empty()){
+                if(!previewAt)previewAt=now;
+                if(now-previewAt>=500&&(!preview.aperta()||preview.icona()!=hovered)){
+                    for(const auto& [i,r]:slots)if(int(i)==hovered){
+                        const LONG inner=edge==0?r.top:edge==1?r.bottom:edge==2?r.right:r.left;
+                        preview.apri(d.finestreInOrdine(d.voci[i]),r,inner,mi.rcWork,int(i),surface.fin,edge);break;
+                    }
+                }else if(now-previewAt<500)moving=true;
+                previewLeft=0;
+            }else if(!preview.mouseSopra()){
+                if(!previewLeft)previewLeft=now;
+                if(now-previewLeft>=300)preview.chiudi();else if(preview.aperta())moving=true;
+            }
+            if(preview.aperta())preview.riconcilia();
+            if(moving)wake();else vetro::fermaBattito(surface.fin,pulse);
+            if(preview.aperta())SetTimer(surface.fin,pulse,100,nullptr);else KillTimer(surface.fin,pulse);
             if(repaint||dirtyBitmaps){dirtyBitmaps=false;InvalidateRect(surface.fin,nullptr,FALSE);}
         }
         bool dirtyBitmaps=false;
@@ -1188,7 +1297,9 @@ private:
             const auto color=owner->coloreAuto?(surface.scuro?D2D1::ColorF(.12f,.12f,.14f,.35f):D2D1::ColorF(1,1,1,.38f)):
                 D2D1::ColorF(owner->coloreFondo.r,owner->coloreFondo.g,owner->coloreFondo.b,.62f);
             brush->SetColor(color);rt->FillRoundedRectangle(shape,brush);
-            brush->SetColor(surface.inchiostro(.22f));rt->DrawRoundedRectangle(shape,brush,1);
+            brush->SetColor(surface.scuro?D2D1::ColorF(1,1,1,.14f):D2D1::ColorF(1,1,1,.75f));auto stroke=shape;stroke.rect.left+=.5f;stroke.rect.top+=.5f;stroke.rect.right-=.5f;stroke.rect.bottom-=.5f;
+            stroke.radiusX=std::max(0.f,stroke.radiusX-.5f);stroke.radiusY=stroke.radiusX;
+            rt->DrawRoundedRectangle(stroke,brush,1);
             for(const auto& [i,r]:slots){
                 if(i>=owner->voci.size()||opacity<=0)continue;
                 const auto& v=owner->voci[i];
@@ -1215,6 +1326,51 @@ private:
             if(revision!=surface.giroRt){for(auto& [key,b]:bitmaps)b->Release();bitmaps.clear();dirtyBitmaps=true;}
         }
     };
+#ifdef TLAUNCHER_NATIVE_CI
+public:
+    bool ciSecondaryPresentation(HMONITOR display,const std::function<bool(HWND,const std::wstring&)>& snapshot){
+        ExtraDock view(this,display);
+        if(!view.surface.crea(L"TLauncher.Native.DockSecondary",::vetro::procedura<ExtraDock>,&view,false,1,false))return false;
+        view.surface.dpi=vetro::dpiMonitor(display);view.initialize();
+        const int oldMode=visibilityMode,oldEdge=lato,oldRadius=dockRadius;
+        struct Restore {Motore* d;int mode,edge,radius;~Restore(){d->visibilityMode=mode;d->lato=edge;d->dockRadius=radius;}} restore{this,oldMode,oldEdge,oldRadius};
+        visibilityMode=0;lato=0;
+        MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(display,&mi);
+        POINT away{mi.rcMonitor.left+40,mi.rcMonitor.top+40};
+        SetCursorPos(away.x,away.y);
+        view.update(away,nullptr,GetTickCount64());
+        if(view.slots.empty())return false;
+        const auto rest=view.slots.front().second;
+        POINT point{(rest.left+rest.right)/2,(rest.top+rest.bottom)/2};
+        SetCursorPos(point.x,point.y);POINT local=point;ScreenToClient(view.surface.fin,&local);
+        SendMessageW(view.surface.fin,WM_MOUSEMOVE,0,MAKELPARAM(local.x,local.y));
+        auto pump=[&](int ms){const auto end=GetTickCount64()+ms;do{MSG msg;while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(5);}while(GetTickCount64()<end);};
+        pump(650);
+        if(view.lens<.7||view.slots.front().second.right-view.slots.front().second.left<=rest.right-rest.left)return false;
+        if(!snapshot(view.surface.fin,L"secondary-hover"))return false;
+        SetCursorPos(away.x,away.y);view.hovered=-1;view.preview.chiudi();view.wake();pump(1000);
+        if(view.lens>.01)return false;
+        for(int corner:{0,8,24,64}){
+            dockRadius=corner;view.update(away,nullptr,GetTickCount64());pump(100);
+            for(bool dark:{false,true}){
+                view.surface.scuro=dark;view.draw();DwmFlush();
+                if(!snapshot(view.surface.fin,L"secondary-expanded-radius-"+std::to_wstring(corner)+(dark?L"-dark":L"-light")))return false;
+            }
+            view.collapsed=1;view.collapseVelocity=0;view.active=false;
+            // Snapshot the real collapsed composition at the settled endpoint.
+            view.shape.rect={0,0,float(view.bar.right-view.bar.left),float(view.bar.bottom-view.bar.top)};
+            view.shape.radiusX=view.shape.radiusY=float(barRadius)*view.surface.dpi;
+            view.surface.posiziona(view.bar.left,view.bar.top,view.bar.right-view.bar.left,view.bar.bottom-view.bar.top);
+            SetWindowPos(view.glass,view.surface.fin,view.bar.left,view.bar.top,view.bar.right-view.bar.left,view.bar.bottom-view.bar.top,SWP_NOACTIVATE);
+            for(bool dark:{false,true}){view.surface.scuro=dark;view.draw();DwmFlush();if(!snapshot(view.surface.fin,L"secondary-collapsed-radius-"+std::to_wstring(corner)+(dark?L"-dark":L"-light")))return false;}
+            view.collapsed=0;view.glassBounds={};view.screenRect={};
+        }
+        view.update(away,nullptr,GetTickCount64());pump(1000);
+        if(view.moving)return false;
+        return true;
+    }
+private:
+#endif
     std::vector<std::unique_ptr<ExtraDock>> extraDocks;
     void syncExtraDocks(){
         if(!attivo||displayMode!=4)return;
@@ -1227,7 +1383,7 @@ private:
             if(m==monitor||std::any_of(extraDocks.begin(),extraDocks.end(),[&](const auto& view){return view->display==m;}))continue;
             auto view=std::make_unique<ExtraDock>(this,m);
             if(view->surface.crea(L"TLauncher.Native.DockSecondary",::vetro::procedura<ExtraDock>,view.get(),false,1,false)){
-                view->surface.dpi=vetro::dpiMonitor(m);extraDocks.push_back(std::move(view));
+                view->surface.dpi=vetro::dpiMonitor(m);view->initialize();extraDocks.push_back(std::move(view));
             }
         }
         updateExtraDocks();
@@ -1239,7 +1395,7 @@ private:
     }
     bool extraAnchor(HMONITOR m,size_t i,RECT& out){
         for(auto& view:extraDocks)if(view->display==m&&!view->full)
-            for(const auto& [index,r]:view->slots)if(i==index){out=r;view->revealUntil=GetTickCount64()+1400;return true;}
+            for(const auto& [index,r]:view->restSlots)if(i==index){out=r;view->revealUntil=GetTickCount64()+1400;view->active=true;view->wake();return true;}
         return false;
     }
 
@@ -1466,6 +1622,7 @@ private:
         HWND v = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED,
                                  L"TLauncher.Native.DockVetro", L"", WS_POPUP | WS_THICKFRAME, 0, 0, 10, 10, nullptr, nullptr, inst, nullptr);
         SetLayeredWindowAttributes(v, 0, 255, LWA_ALPHA);
+        const COLORREF noBorder=0xfffffffeu;DwmSetWindowAttribute(v,34,&noBorder,sizeof(noBorder));
         MARGINS mg{-1, -1, -1, -1}; DwmExtendFrameIntoClientArea(v, &mg);
         BOOL scuro = temaScuro(); DwmSetWindowAttribute(v, DWMWA_USE_IMMERSIVE_DARK_MODE, &scuro, sizeof(scuro));
         int tipo = 3; DwmSetWindowAttribute(v, DWMWA_SYSTEMBACKDROP_TYPE, &tipo, sizeof(tipo));
@@ -2117,8 +2274,8 @@ private:
     float yBaseIcone() const { return yBaseRiposo() + (float)yNascosto; }        // ... e dove sono adesso (coordinate finestra)
 
     // molla smorzata a piccoli passi (zeta < 1 = rimbalza, effetto gelatina); true se si muove ancora
-    bool molla(double& x, double& v, double obiettivo, double k, double zeta, double eps = 0.05) const {
-        const int n = 4; const double dt = dtFotogramma / n, c = 2 * std::sqrt(k) * zeta;
+    bool molla(double& x, double& v, double obiettivo, double k, double zeta, double eps = 0.05, double frame = -1) const {
+        const int n = 4; const double dt = (frame<0?dtFotogramma:frame) / n, c = 2 * std::sqrt(k) * zeta;
         for (int i = 0; i < n; i++) { v += (k * (obiettivo - x) - c * v) * dt; x += v * dt; }
         if (std::abs(obiettivo - x) < eps && std::abs(v) < eps * 10) { x = obiettivo; v = 0; return false; }
         return true;
@@ -2253,16 +2410,17 @@ private:
         return x;
     }
 
+    static float lensSize(float size,float maximum,float distance,double amount) {
+        const float t=std::min(std::abs(distance)/(size*2.6f),1.f);
+        return size+(maximum-size)*(std::cos(t*float(M_PI))+1)*.5f*float(amount);
+    }
     // lato di ogni icona con l'ingrandimento "a lente" attorno al mouse (prima della scala di comparsa)
     std::vector<float> dimensioni(const std::vector<float>& riposo) const {
         std::vector<float> d(voci.size(), S);
         if (lente <= 0.001) return d;
-        const float raggio = S * 2.6f;
         for (size_t i = 0; i < voci.size(); i++) {
             const float c = riposo[i] + S * (float)voci[i].scala / 2;
-            const float dist = std::min(std::abs(mouseX - c) / raggio, 1.0f);
-            const float k = (std::cos(dist * (float)M_PI) + 1) / 2;   // 1 sotto il mouse, 0 a distanza
-            d[i] = S + (M - S) * k * (float)lente;
+            d[i] = lensSize(S,M,mouseX-c,lente);
         }
         return d;
     }
@@ -2615,8 +2773,7 @@ private:
         if (lente > 0.001 && rettTesta.right > rettTesta.left && mouseDentro) {
             // distanza dal bordo piu' vicino, 0 sopra la capsula: e' larga, e dal centro (come un'icona) i tasti a destra
             // la facevano rimpicciolire mentre ci si andava sopra
-            const float raggio = S * 2.6f;
-            const float fuori = std::max({0.0f, rettTesta.left - mouseX, mouseX - rettTesta.right});
+                const float fuori = std::max({0.0f, rettTesta.left - mouseX, mouseX - rettTesta.right});
             const float dist = std::min(fuori / raggio, 1.0f);
             const float kk = (std::cos(dist * (float)M_PI) + 1) / 2;
             scTesta = 1 + (M / S - 1) * kk * (float)lente;
@@ -3497,16 +3654,23 @@ private:
     }
     // trascinamento di file sul dock: sul cestino si spostano nel Cestino di Windows (come trascinarli sull'icona del desktop)
     struct Bersaglio : IDropTarget {
-        Motore* d = nullptr; bool file = false;
+        Motore* d = nullptr; bool file = false, dynamic=false;ULONG refs=1;
+        std::function<int(POINT)> presentationHit;
+        std::function<void()> presentationLeave;
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID r, void** p) override { if (r == IID_IUnknown || r == IID_IDropTarget) { *p = this; return S_OK; } *p = nullptr; return E_NOINTERFACE; }
-        ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
-        ULONG STDMETHODCALLTYPE Release() override { return 1; }
+        ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+        ULONG STDMETHODCALLTYPE Release() override {const auto count=--refs;if(!count&&dynamic)delete this;return count;}
         HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* o, DWORD, POINTL pt, DWORD* e) override {
             FORMATETC f = {CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
             file = o && o->QueryGetData(&f) == S_OK;
             return DragOver(0, pt, e);
         }
         HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL pt, DWORD* e) override {
+            if(presentationHit){
+                const int i=presentationHit({pt.x,pt.y});
+                d->dropSopra=file&&i>=0&&size_t(i)<d->voci.size()&&d->voci[i].avvio==AVVIO_CESTINO&&(*e&DROPEFFECT_MOVE)?i:-1;
+                *e=d->dropSopra>=0?DROPEFFECT_MOVE:DROPEFFECT_NONE;return S_OK;
+            }
             float x = 0, y = 0; d->logicoSchermo({pt.x, pt.y}, x, y);
             d->mouseDentro = true; d->mouseSulDock = true; d->mouseX = x; d->mouseY = y;   // la lente segue il trascinamento
             const int i = d->iconaInPunto(x, y);
@@ -3518,7 +3682,7 @@ private:
             *e = c >= 0 ? DROPEFFECT_MOVE : DROPEFFECT_NONE;   // (aspetto del cursore: "sposta" nel Cestino)
             return S_OK;
         }
-        HRESULT STDMETHODCALLTYPE DragLeave() override { d->dropSopra = -1; d->mouseDentro = false; d->mouseSulDock = false; d->sopra = -1; d->dirty = true; return S_OK; }
+        HRESULT STDMETHODCALLTYPE DragLeave() override { if(presentationLeave)presentationLeave(); d->dropSopra = -1; d->mouseDentro = false; d->mouseSulDock = false; d->sopra = -1; d->dirty = true; return S_OK; }
         HRESULT STDMETHODCALLTYPE Drop(IDataObject* o, DWORD k, POINTL pt, DWORD* e) override {
             DragOver(k, pt, e);
             const bool cestino = d->dropSopra >= 0;
@@ -3572,6 +3736,10 @@ private:
             return S_OK;
         }
     } bersaglioDrop;
+    IDropTarget* extraDrop(std::function<int(POINT)> hit,std::function<void()> leave){
+        auto* drop=new Bersaglio;drop->d=this;drop->dynamic=true;
+        drop->presentationHit=std::move(hit);drop->presentationLeave=std::move(leave);return drop;
+    }
     // mixer del volume (vista P_MIXER, mixer.h): indice delle righe = uscita * 1000 + app + 1 (0 = l'uscita)
     mixer::Mixer mix;
     int trascinaMixer = -1;

@@ -3972,6 +3972,7 @@ static void configureDesktopClocks(bool refresh=false) {
         gDesktopClocks[i].moved=[i](const desktopclock::Settings& position){
             impostazioni::valori().clocks[i]=position;impostazioni::saveClock(i,position);
         };
+        gDesktopClocks[i].diagnostic=[](const std::wstring& message){logf("%ls",message.c_str());};
         gDesktopClocks[i].configure(clocks[i],i==1,refresh);
     }
 }
@@ -4014,6 +4015,17 @@ static void openCaptureTool(bool record) {
     if(CreateProcessW(exe.c_str(),args.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&startup,&child)){
         CloseHandle(child.hThread);process=child.hProcess;
     }else logf("capture tool: launch failed (%lu)",GetLastError());
+}
+static shortcuts::Binding gCaptureHotkey{0x5370,0x5380},gRecordHotkey{0x5371,0x5381},gPauseHotkey{0x5372,0x5382};
+static void pauseCaptureTool(){
+    const auto process=captureProcess[1];
+    if(!process||WaitForSingleObject(process,0)!=WAIT_TIMEOUT)return;
+    EnumWindows([](HWND h,LPARAM pid)->BOOL{
+        DWORD actual=0;GetWindowThreadProcessId(h,&actual);
+        wchar_t cls[64]{};GetClassNameW(h,cls,64);
+        if(actual==DWORD(pid)&&!wcscmp(cls,L"tuanpc-deskRecordingPanel"))PostMessageW(h,WM_APP+61,0,0);
+        return TRUE;
+    },LPARAM(GetProcessId(process)));
 }
 static shortcuts::Binding gSpotlightHotkey{TASTO_SPOTLIGHT,0x536c},gStageHotkey{TASTO_STAGE,0x536d};
 static void apriSpotlight() {
@@ -4313,8 +4325,10 @@ static LRESULT CALLBACK procMessaggi(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_APRI_LAUNCHER: if (gDockOk) gDock.apriLauncher(); return 0;
         case WM_HOTKEY:
+            if(gImpostazioni.capturingShortcut())return 0;
             if(w==TASTO_PRIMO_PIANO)primoPiano();
-            else if(w==TASTO_CAPTURE||w==TASTO_RECORD)openCaptureTool(w==TASTO_RECORD);
+            else if(gCaptureHotkey.matches(w)||gRecordHotkey.matches(w))openCaptureTool(gRecordHotkey.matches(w));
+            else if(gPauseHotkey.matches(w))pauseCaptureTool();
             else if(gSpotlightHotkey.matches(w))apriSpotlight();
             else if(gStageHotkey.matches(w)){auto& s=impostazioni::valori().stage;s.enabled=!s.enabled;impostazioni::salva();gStage.configure(s);}
             return 0;
@@ -4846,8 +4860,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     // Ctrl+Win+T: sempre in primo piano (se un altro programma la usa gia', resta a lui)
     if (!RegisterHotKey(gMessaggi, TASTO_PRIMO_PIANO, MOD_CONTROL | MOD_WIN | MOD_NOREPEAT, 'T'))
         logf("Ctrl+Win+T usata da un altro programma (errore %lu): niente sempre in primo piano", GetLastError());
-    if(!RegisterHotKey(gMessaggi,TASTO_CAPTURE,MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT,'S'))logf("Capture hotkey unavailable");
-    if(!RegisterHotKey(gMessaggi,TASTO_RECORD,MOD_CONTROL|MOD_SHIFT|MOD_NOREPEAT,'R'))logf("Recorder hotkey unavailable");
+    {const auto& keys=impostazioni::valori().captureKeys;
+     if(!gCaptureHotkey.apply(gMessaggi,keys[0],true))logf("Capture hotkey unavailable");
+     if(!gRecordHotkey.apply(gMessaggi,keys[1],true))logf("Recorder hotkey unavailable");
+     if(!gPauseHotkey.apply(gMessaggi,keys[2],true))logf("Recorder pause hotkey unavailable");}
     gBattito = GetTickCount64(); SetTimer(gMessaggi, 13, 250, nullptr);   // battito per l'hook della tastiera
     gDpiAvvio = dpiPrincipale();
     leggiMovimento();
@@ -4882,9 +4898,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     gRicerca.appMenu=[](const std::wstring& command,POINT p,HWND owner){if(gDockOk)gDock.catalogMenu(command,p,owner);};
     gRicerca.catalogChanged=[]{if(gDockOk)gDock.catalogChanged();};
     if(gDockOk)gDock.catalogChanged();
+    gImpostazioni.captureShortcutChanged=[](int index,shortcuts::Key key){
+        auto& s=impostazioni::valori();
+        if(index<0||index>2||key==shortcuts::Key{MOD_CONTROL|MOD_WIN,'T'})return false;
+        for(int i=0;i<3;++i)if(i!=index&&key==s.captureKeys[i])return false;
+        if((s.spotlightEnabled&&s.spotlightAltSpace&&key==s.spotlightShortcut)||(s.stageShortcutEnabled&&key==s.stageShortcut))return false;
+        auto& binding=index==0?gCaptureHotkey:index==1?gRecordHotkey:gPauseHotkey;
+        return binding.apply(gMessaggi,key,true);
+    };
     gImpostazioni.shortcutChanged=[](bool stage,shortcuts::Key key,bool enabled){
         const auto& s=impostazioni::valori();
         if(key==shortcuts::Key{MOD_CONTROL|MOD_WIN,'T'}||key==shortcuts::Key{MOD_CONTROL|MOD_ALT|MOD_SHIFT,VK_F12})return false;
+        if(enabled)for(const auto& capture:s.captureKeys)if(key==capture)return false;
         if(enabled&&((stage&&s.spotlightEnabled&&s.spotlightAltSpace&&key==s.spotlightShortcut)||(!stage&&s.stageShortcutEnabled&&key==s.stageShortcut)))return false;
         return (stage?gStageHotkey:gSpotlightHotkey).apply(gMessaggi,key,enabled);
     };
@@ -5007,7 +5032,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     cursori::togli();   // di nuovo i cursori di Windows
     for(auto& child:captureProcess)if(child){closeCaptureWindows(child);CloseHandle(child);child=nullptr;}
     for(auto& clock:gDesktopClocks)clock.stop();
-    gStage.stop();gRicerca.ferma();gSpotlightHotkey.stop();gStageHotkey.stop();
+    gStage.stop();gRicerca.ferma();gSpotlightHotkey.stop();gStageHotkey.stop();gCaptureHotkey.stop();gRecordHotkey.stop();gPauseHotkey.stop();
     if (gDockOk) gDock.chiudi();
     gBanner.chiudiLettore();
     togliPrimoPiano();

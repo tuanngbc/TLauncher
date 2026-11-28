@@ -13,6 +13,7 @@
 #include <wincodec.h>
 
 namespace appicons {
+inline constexpr wchar_t normalizationVersion[]=L"optical-v2|";
 struct Pixels {int w=0,h=0;std::vector<UINT> bgra;};
 struct Entry {std::shared_ptr<const Pixels> pixels;ULONGLONG used=0;};
 inline std::mutex mutex;
@@ -21,7 +22,7 @@ inline constexpr size_t budget=24*1024*1024;
 inline std::unordered_map<std::wstring,std::wstring> aliases;
 inline std::unordered_map<std::wstring,ULONGLONG> failures;
 inline std::wstring requestKey(const std::wstring& source,int size){
-    std::wstring k=source;for(auto& c:k)c=(wchar_t)towlower(c);return k+L"|"+std::to_wstring(size);
+    std::wstring k=source;for(auto& c:k)c=(wchar_t)towlower(c);return std::wstring(normalizationVersion)+k+L"|"+std::to_wstring(size);
 }
 inline bool canRequest(const std::wstring& source,int size){
     std::lock_guard<std::mutex> lock(mutex);auto i=failures.find(requestKey(source,size));
@@ -35,7 +36,7 @@ inline std::wstring key(const std::wstring& source,int size) {
     WIN32_FILE_ATTRIBUTE_DATA a{};
     if(GetFileAttributesExW(source.c_str(),GetFileExInfoStandard,&a))
         s+=L"|"+std::to_wstring(a.ftLastWriteTime.dwHighDateTime)+L":"+std::to_wstring(a.ftLastWriteTime.dwLowDateTime)+L":"+std::to_wstring(a.nFileSizeLow);
-    return s+L"|v2|"+std::to_wstring(size);
+    return std::wstring(normalizationVersion)+s+L"|"+std::to_wstring(size);
 }
 inline uint64_t hash(const void* data,size_t n) {
     uint64_t h=14695981039346656037ull;auto b=(const unsigned char*)data;
@@ -78,18 +79,26 @@ inline bool decodeImage(const std::wstring& source,int size,int& w,int& h,std::v
 inline void normalize(Pixels& image,int size){
     int left=image.w,top=image.h,right=0,bottom=0;
     for(int y=0;y<image.h;++y)for(int x=0;x<image.w;++x){
-        if(!(image.bgra[size_t(y)*image.w+x]>>24))continue;
+        if((image.bgra[size_t(y)*image.w+x]>>24)<24)continue;
         left=std::min(left,x);top=std::min(top,y);right=std::max(right,x+1);bottom=std::max(bottom,y+1);
     }
     if(right<=left||bottom<=top)return;
     const int width=right-left,height=bottom-top;
-    const double scale=std::min(1.5,double(size)/std::max(width,height));
-    const int w=std::max(1,int(std::lround(width*scale))),h=std::max(1,int(std::lround(height*scale)));
+    const double scale=std::min(4.0,double(size)*.90/std::max(width,height));
+    // Bounds define the optical scale; retain every source pixel (including halo)
+    // when it fits, falling back to fitting the complete bitmap when necessary.
+    int allLeft=image.w,allTop=image.h,allRight=0,allBottom=0;
+    for(int y=0;y<image.h;++y)for(int x=0;x<image.w;++x)if(image.bgra[size_t(y)*image.w+x]>>24){
+        allLeft=std::min(allLeft,x);allTop=std::min(allTop,y);allRight=std::max(allRight,x+1);allBottom=std::max(allBottom,y+1);
+    }
+    left=allLeft;top=allTop;right=allRight;bottom=allBottom;
+    const double fit=std::min(scale,double(size)/std::max(right-left,bottom-top));
+    const int w=std::max(1,int(std::lround((right-left)*fit))),h=std::max(1,int(std::lround((bottom-top)*fit)));
     std::vector<UINT> result(size_t(size)*size,0);
     const auto sample=[&](int x,int y){return image.bgra[size_t(y)*image.w+x];};
     for(int y=0;y<h;++y)for(int x=0;x<w;++x){
-        const double px=std::clamp(left+(x+.5)*width/w-.5,double(left),double(right-1));
-        const double py=std::clamp(top+(y+.5)*height/h-.5,double(top),double(bottom-1));
+        const double px=std::clamp(left+(x+.5)*(right-left)/w-.5,double(left),double(right-1));
+        const double py=std::clamp(top+(y+.5)*(bottom-top)/h-.5,double(top),double(bottom-1));
         const int a=int(px),b=int(py),c=std::min(a+1,right-1),d=std::min(b+1,bottom-1);
         const double fx=px-a,fy=py-b;
         const UINT p=sample(a,b),q=sample(c,b),r=sample(a,d),s=sample(c,d);

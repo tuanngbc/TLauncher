@@ -1,3 +1,4 @@
+#include "clock-v102-reference.h"
 // Compiled/executed exclusively on the hosted Windows runner.
 #pragma once
 static bool phase3Snapshot(HWND h,const std::filesystem::path& file) {
@@ -86,6 +87,9 @@ static int phase3DockContracts(std::ostream& report,const std::filesystem::path&
     gDock.schermoIntero(0);pump(600);if(!IsWindowVisible(gDock.icone))return 163;
     MONITORINFO unchanged{sizeof(unchanged)};GetMonitorInfoW(MonitorFromWindow(source,MONITOR_DEFAULTTONEAREST),&unchanged);
     if(!EqualRect(&monitor.rcWork,&unchanged.rcWork))return 164;
+    gDock.schermoIntero(2);
+    if(!gDock.ciSecondaryPresentation(MonitorFromWindow(source,MONITOR_DEFAULTTONEAREST),[&](HWND h,const std::wstring& name){return phase3Snapshot(h,evidence/(L"phase3-"+name+L".bmp"));}))return 198;
+    report<<"SECONDARY_PRESENTATION_REAL_HWND_HOVER_MAGNIFICATION_SETTLES=PASS\nSECONDARY_RADIUS_LIGHT_DARK_EXPANDED_COLLAPSED_SCREENSHOTS=EXPORTED\nPHYSICAL_DUAL_MONITOR_OWNER_UAT=PENDING\n";
     gDock.chiudi();const ULONGLONG restoredUntil=GetTickCount64()+3000;
     do{ciPump(50);GetMonitorInfoW(MonitorFromWindow(source,MONITOR_DEFAULTTONEAREST),&unchanged);}while(!EqualRect(&originalWork,&unchanged.rcWork)&&GetTickCount64()<restoredUntil);
     if(!EqualRect(&originalWork,&unchanged.rcWork))return 165;
@@ -113,26 +117,37 @@ static int phase3Contracts(std::ostream& report,const std::filesystem::path& evi
         appicons::Pixels fixture{48,48,std::vector<UINT>(48*48)};
         for(int y=18;y<30;++y)for(int x=12;x<36;++x)fixture.bgra[y*48+x]=0xff3695e4;
         appicons::normalize(fixture,48);
-        if(fixture.w!=48||fixture.h!=48||fixture.bgra[24*48+5]||
-            fixture.bgra[24*48+6]!=0xff3695e4||fixture.bgra[15*48+24]!=0xff3695e4||
-            fixture.bgra[14*48+24]||fixture.bgra[24*48+42])return 189;
-        report<<"ICON_TRANSPARENT_PADDING_ASPECT_AND_UPSCALE_CAP=PASS\n";
+        if(fixture.w!=48||fixture.h!=48)return 189;
+        int left=48,right=0,top=48,bottom=0;
+        for(int y=0;y<48;++y)for(int x=0;x<48;++x)if(fixture.bgra[y*48+x]>>24){left=std::min(left,x);right=std::max(right,x+1);top=std::min(top,y);bottom=std::max(bottom,y+1);}
+        if(right-left!=43||bottom-top!=22||fixture.bgra[24*48+24]!=0xff3695e4)return 189;
+        appicons::Pixels tiny{48,48,std::vector<UINT>(48*48)};for(int y=21;y<27;++y)for(int x=21;x<27;++x)tiny.bgra[y*48+x]=0xff3695e4;
+        appicons::normalize(tiny,48);
+        // Enlargement is bounded at 4x to avoid destroying very small artwork.
+        if(tiny.bgra[24*48+11]||tiny.bgra[24*48+12]!=0xff3695e4||tiny.bgra[24*48+35]!=0xff3695e4||tiny.bgra[24*48+36])return 189;
+        if(std::wstring(appicons::normalizationVersion)!=L"optical-v2|")return 189;
+        clockreference::save({{48,48},fixture.bgra},evidence/L"icon-optical-wide.bmp");
+        report<<"ICON_OPTICAL_V2_TRANSPARENT_PADDING_ASPECT_AND_VERSION=PASS\n";
     }
     {
         desktopclock::Clock clock;desktopclock::Settings appearance;appearance.enabled=true;
+        clock.frozen={2026,9,1,28,23,58,0,0};
         const int locale=testi::lingua().load();
-        for(const auto lang:{testi::INGLESE,testi::VIETNAMITA}){
-            testi::lingua()=lang;clock.configure(appearance,false,true);
+        for(const auto lang:{testi::INGLESE,testi::VIETNAMITA})for(int scale:{70,100,140}){
+            testi::lingua()=lang;appearance.scale=scale;clock.configure(appearance,false,true);
             const auto window=clock.ciHandle();
             if(!window){testi::lingua()=locale;return 190;}
-            SetWindowPos(window,HWND_TOPMOST,0,0,0,0,SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE);
-            ciPump(120);
-            if(!phase3Snapshot(window,evidence/(lang==testi::INGLESE?L"phase3-clock-classic-en.bmp":L"phase3-clock-classic-vi.bmp"))){
-                testi::lingua()=locale;return 191;
-            }
+            if(clock.ciFaces.size()!=3||_wcsicmp(clock.ciFaces[0].c_str(),L"Steelfish Rg")||_wcsicmp(clock.ciFaces[2].c_str(),L"la Compagnie des Ombres"))return 195;
+            for(int n:desktopclock::fontRegistrations)if(n<=0)return 195;
+            const auto tag=std::wstring(lang==testi::INGLESE?L"en-":L"vi-")+std::to_wstring(scale);
+            const auto reference=clockreference::render(scale/100.f,clock.frozen,lang==testi::VIETNAMITA);
+            clockreference::save(reference,evidence/(L"clock-v102-reference-"+tag+L".bmp"));
+            clockreference::save({clock.ciSize,clock.ciPixels},evidence/(L"clock-candidate-"+tag+L".bmp"));
+            if(lang==testi::INGLESE&&(reference.size.cx!=clock.ciSize.cx||reference.size.cy!=clock.ciSize.cy||reference.pixels!=clock.ciPixels))return 196;
+            report<<"CLOCK_ACTUAL_FACES=Steelfish Rg,la Compagnie des Ombres SCALE="<<scale<<" LANGUAGE="<<lang<<" GLYPH_LINKED_RUNS="<<clock.ciFallbacks<<"\n";
         }
         clock.stop();testi::lingua()=locale;
-        report<<"CLOCK_CLASSIC_EN_AND_VI_SCREENSHOTS=EXPORTED\n";
+        report<<"CLOCK_V102_FROZEN_EN_PIXEL_PARITY=PASS\nCLOCK_VI_GLYPH_LINK_VISUAL_COMPARISON=EXPORTED_OWNER_UAT_PENDING\n";
     }
     {
         const int language=testi::lingua().exchange(testi::CINESE);
@@ -150,7 +165,13 @@ static int phase3Contracts(std::ostream& report,const std::filesystem::path& evi
     if(!tlauncher::ownsDockPin(pin.wstring())||tlauncher::ownsDockPin(L"C:\\Windows\\fixture.lnk"))return 82;
     report<<"DOCK_PIN_WRITE_BOUNDARY=PASS\n";
     auto& s=impostazioni::valori();s.stage.height=174;s.stage.peekDelay=750;s.stage.peekLive=false;s.dockVisibility=2;s.dockBarCloseDelay=900;s.spotlightMode=2;s.spotlightShortcut={MOD_CONTROL|MOD_ALT,VK_F22};s.stageShortcut={MOD_ALT|MOD_SHIFT,'S'};s.stageShortcutEnabled=false;impostazioni::salva();
+    const auto capture=s.captureKeys;
+    s.captureKeys={{{MOD_CONTROL|MOD_ALT,VK_F19},{MOD_CONTROL|MOD_ALT,VK_F20},{MOD_CONTROL|MOD_ALT,VK_F21}}};impostazioni::salva();
+    s.captureKeys=capture;
     s.stage.height=72;s.dockVisibility=0;impostazioni::carica();
+    if(s.captureKeys!=std::array<shortcuts::Key,3>{{{MOD_CONTROL|MOD_ALT,VK_F19},{MOD_CONTROL|MOD_ALT,VK_F20},{MOD_CONTROL|MOD_ALT,VK_F21}}})return 197;
+    s.captureKeys=capture;impostazioni::salva();
+    report<<"THREE_CAPTURE_SHORTCUTS_PERSISTENCE=PASS\n";
     if(s.stage.height!=174||s.stage.peekDelay!=750||s.stage.peekLive||s.dockVisibility!=2||s.dockBarCloseDelay!=900||s.spotlightMode!=2||s.spotlightShortcut!=shortcuts::Key{MOD_CONTROL|MOD_ALT,VK_F22}||s.stageShortcut!=shortcuts::Key{MOD_ALT|MOD_SHIFT,'S'}||s.stageShortcutEnabled)return 61;
     appcatalog::Metadata meta;meta.name=L"Ứng dụng thử nghiệm";meta.favorite=true;meta.folder=L"Công việc";meta.manual=true;meta.icon=L"custom.ico";
     appcatalog::save(L"C:\\fixture\\tool.exe",meta);appcatalog::folder(L"",meta.folder);appcatalog::loaded=false;appcatalog::metadata.clear();
@@ -216,6 +237,13 @@ static int phase3Contracts(std::ostream& report,const std::filesystem::path& evi
     st.perspective=true;manager.configure(st);ciPump(100);manager.changed();rail=FindWindowW(L"TLauncher.Native.Stage",nullptr);
     if(!rail||!IsIconic(source)||!manager.cachedPreviewCount()||!phase3Snapshot(rail,evidence/L"phase3-stage-perspective.bmp"))return 93;
     report<<"STAGE_NATIVE_PROJECTIVE_CARD_RENDER=PASS\n";
+    for(bool perspective:{false,true}){
+        auto transparent=st;transparent.background=0;transparent.railOpacity=0;transparent.cardOpacity=0;transparent.perspective=perspective;
+        manager.configure(transparent);ciPump(120);manager.changed();rail=FindWindowW(L"TLauncher.Native.Stage",nullptr);
+        if(!rail||!phase3Snapshot(rail,evidence/(perspective?L"phase3-stage-transparent-perspective.bmp":L"phase3-stage-transparent-flat.bmp")))return 199;
+    }
+    manager.configure(st);ciPump(100);manager.changed();rail=FindWindowW(L"TLauncher.Native.Stage",nullptr);
+    report<<"STAGE_ZERO_RAIL_AND_CARD_OPACITY_NO_OUTLINES=EXPORTED\n";
     // Actual rail geometry follows each synthetic Dock edge footprint without
     // changing the real Windows work area, even when inventory is unchanged.
     MONITORINFO monitor{sizeof(monitor)};HMONITOR display=MonitorFromWindow(rail,MONITOR_DEFAULTTONEAREST);GetMonitorInfoW(display,&monitor);RECT reservation{};

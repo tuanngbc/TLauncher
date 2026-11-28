@@ -37,6 +37,7 @@ struct Valori {
     bool spotlightEnabled=true,spotlightAltSpace=true;
     int spotlightMode=1;
     shortcuts::Key spotlightShortcut{},stageShortcut{MOD_CONTROL|MOD_ALT|MOD_WIN,'S'};
+    std::array<shortcuts::Key,3> captureKeys{{{MOD_CONTROL|MOD_SHIFT,'S'},{MOD_CONTROL|MOD_SHIFT,'R'},{MOD_CONTROL|MOD_SHIFT,'P'}}};
     bool stageShortcutEnabled=true;
     bool avvio = false;           // FluidWin si apre all'accesso a Windows (sta nel registro di Windows, vedi avvioAttivo)
     bool gelatina = true;         // finestre "di gelatina" quando si trascinano
@@ -209,6 +210,12 @@ inline void carica() {
     v.stageShortcut={leggiDword(L"StageHotkeyMods",MOD_CONTROL|MOD_ALT|MOD_WIN),leggiDword(L"StageHotkeyKey",'S')};
     if(!shortcuts::valid(v.spotlightShortcut))v.spotlightShortcut={};
     if(!shortcuts::valid(v.stageShortcut))v.stageShortcut={MOD_CONTROL|MOD_ALT|MOD_WIN,'S'};
+    for(int i=0;i<3;++i){
+        const auto prefix=L"CaptureHotkey"+std::to_wstring(i);
+        auto& k=v.captureKeys[i];
+        k={leggiDword((prefix+L"Mods").c_str(),k.mods),leggiDword((prefix+L"Key").c_str(),k.key)};
+        if(!shortcuts::valid(k))k={MOD_CONTROL|MOD_SHIFT,UINT(i==0?'S':i==1?'R':'P')};
+    }
     v.stageShortcutEnabled=leggiDword(L"StageHotkeyEnabled",1)!=0;
     v.spotlightMode=std::clamp(int(leggiDword(L"SpotlightMode",1)),0,3);
     v.stage.enabled = leggiDword(L"StageEnabled", 0);
@@ -258,6 +265,8 @@ inline void salva() {
     scriviDword(L"DockVisibility",v.dockVisibility);scriviDword(L"DockBarLength",v.dockBarLength);scriviDword(L"DockBarThickness",v.dockBarThickness);
     scriviDword(L"DockBarInset",v.dockBarInset);scriviDword(L"DockBarAlignment",v.dockBarAlignment);scriviDword(L"DockBarOffset",v.dockBarOffset);
     scriviDword(L"DockCustomRadius",v.dockCustomRadius);
+    for(int i=0;i<3;++i){const auto p=L"CaptureHotkey"+std::to_wstring(i);
+        scriviDword((p+L"Mods").c_str(),v.captureKeys[i].mods);scriviDword((p+L"Key").c_str(),v.captureKeys[i].key);}
     scriviDword(L"CaptureFps",v.captureFps);scriviDword(L"CaptureAudio",v.captureAudio);scriviTesto(L"CaptureFolder",v.captureFolder);
     scriviDword(L"StartArtworkMode",v.startMode);scriviDword(L"StartArtworkScale",v.startScale);scriviTesto(L"StartArtworkPath",v.startIcon);
     scriviDword(L"DockBarRadius",v.dockBarRadius);scriviDword(L"DockCornerRadius",DWORD(v.dockCornerRadius));
@@ -308,6 +317,9 @@ public:
     std::function<std::vector<std::pair<std::wstring, std::wstring>>()> elencoNascoste;
     std::function<void(const std::wstring&)> mostraNascosta;
     std::function<bool(bool,shortcuts::Key,bool)> shortcutChanged;
+    std::function<bool(int,shortcuts::Key)> captureShortcutChanged;
+    bool capturingShortcut()const{return captureListening>=0;}
+    int captureListening=-1;
 
 #ifdef TLAUNCHER_NATIVE_CI
     bool ciReady()const{return aperta&&morph==0;}
@@ -436,6 +448,20 @@ public:
     }
 
     bool messaggio(HWND hw, UINT m, WPARAM w, LPARAM l, LRESULT& r) {
+        if(captureListening>=0&&(m==WM_KEYDOWN||m==WM_SYSKEYDOWN)){
+            r=0;
+            if(w==VK_ESCAPE){captureListening=-1;disegna();return true;}
+            if(w==VK_CONTROL||w==VK_SHIFT||w==VK_MENU||w==VK_LWIN||w==VK_RWIN)return true;
+            shortcuts::Key next{UINT(((GetKeyState(VK_CONTROL)&0x8000)?MOD_CONTROL:0)|
+                ((GetKeyState(VK_MENU)&0x8000)?MOD_ALT:0)|((GetKeyState(VK_SHIFT)&0x8000)?MOD_SHIFT:0)|
+                (((GetKeyState(VK_LWIN)|GetKeyState(VK_RWIN))&0x8000)?MOD_WIN:0)),UINT(w)};
+            if(!shortcuts::valid(next))return true;
+            const int index=captureListening;captureListening=-1;
+            if(!captureShortcutChanged||!captureShortcutChanged(index,next)){
+                MessageBoxW(hw,clockText(L"Phím tắt bị trùng. Giữ nguyên phím cũ.",L"Shortcut conflict. Previous shortcut preserved."),L"TLauncher",MB_OK|MB_ICONINFORMATION);
+            }else{valori().captureKeys[index]=next;salva();}
+            disegna();return true;
+        }
         r = 0;
         switch (m) {
             case WM_TIMER:
@@ -977,6 +1003,15 @@ private:
     }
 
     void clic(int id) {
+        if(id>=6270&&id<=6275){
+            const int index=(id-6270)%3;
+            if(id<6273){captureListening=index;SetFocus(v.fin);disegna();return;}
+            shortcuts::Key defaults{MOD_CONTROL|MOD_SHIFT,UINT(index==0?'S':index==1?'R':'P')};
+            if(!captureShortcutChanged||!captureShortcutChanged(index,defaults)){
+                MessageBoxW(v.fin,clockText(L"Phím tắt bị trùng. Giữ nguyên phím cũ.",L"Shortcut conflict. Previous shortcut preserved."),L"TLauncher",MB_OK|MB_ICONINFORMATION);return;
+            }
+            valori().captureKeys[index]=defaults;captureListening=-1;salva();disegna();return;
+        }
         if(id==6306||id==6022||id==6023){
             auto& settings=valori();const bool stage=id!=6306;
             auto next=stage?settings.stageShortcut:settings.spotlightShortcut;
@@ -1543,6 +1578,8 @@ private:
                 }
                 y += rs.bottom - rs.top + 6 * d;
             }
+            {std::ifstream build(([]{wchar_t p[32768]{};GetModuleFileNameW(nullptr,p,DWORD(std::size(p)));return std::filesystem::path(p).parent_path();}())/L"BUILD-COMMIT.txt");
+             std::string sha;std::getline(build,sha);if(!sha.empty())riga(L"Commit",std::wstring(sha.begin(),sha.end()));}
             riga(L"TLauncher" + (ver.empty() ? std::wstring() : L" " + ver), L"Your Windows. Your Workspace.");
             riga(L"FluidWin 1.3.1 · Copyright (c) 2026 Clooudy", L"MIT · github.com/clooudfn/FluidWin · native desktop foundation");
             riga(L"TLauncher · GPL-3.0", L"tuanngbc/TLauncher · BLEZZ0102/Deskland · nhhoang188/Deskland-VN");
@@ -1756,8 +1793,11 @@ private:
                 const D2D1_RECT_F r{L,y,R,y+44*d};riquadro(r,sopra==id);aggiungiZona(r,id);
                 v.testo(text,fVoce,{L+16*d,y,R-16*d,y+44*d},inkS);y+=50*d;
             };
-            riga(L"Ctrl+Shift+S",clockText(L"Chụp và sửa ảnh",L"Capture and edit screenshot"));
-            riga(L"Ctrl+Shift+R / P",clockText(L"Quay/dừng và tạm dừng/tiếp tục",L"Record/stop and pause/resume"));
+            const wchar_t* captureNames[]={clockText(L"Chụp và sửa ảnh",L"Capture and edit screenshot"),clockText(L"Quay / dừng",L"Record / stop"),clockText(L"Tạm dừng / tiếp tục",L"Pause / resume")};
+            for(int i=0;i<3;++i){
+                captureOption(6270+i,std::wstring(captureNames[i])+L": "+(captureListening==i?clockText(L"Nhấn tổ hợp phím (Esc hủy)",L"Press shortcut (Esc cancels)"):shortcuts::label(opts.captureKeys[i])));
+                captureOption(6273+i,clockText(L"Khôi phục phím mặc định",L"Restore default shortcut"));
+            }
             captureOption(6260,std::wstring(clockText(L"Tốc độ quay: ",L"Recording rate: "))+std::to_wstring(opts.captureFps)+L" FPS");
             captureOption(6261,opts.captureAudio?clockText(L"Âm thanh hệ thống: bật",L"System audio: on"):clockText(L"Âm thanh hệ thống: tắt",L"System audio: off"));
             captureOption(6262,opts.captureFolder.empty()?clockText(L"Đổi thư mục lưu ảnh và video",L"Set screenshot and recording folder"):opts.captureFolder.c_str());

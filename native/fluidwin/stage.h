@@ -382,6 +382,13 @@ private:
             if(settings.monitor!=2&&m!=chosen) continue;
             auto r=std::make_unique<Rail>(this);r->monitor=m;
             if(!r->glass.crea(L"TLauncher.Native.Stage",vetro::procedura<Rail>,r.get(),false,2,settings.background==1&&settings.railOpacity>0)) continue;
+            const COLORREF noBorder=0xfffffffeu;DwmSetWindowAttribute(r->glass.fin,34,&noBorder,sizeof(noBorder));
+            if(settings.background==0&&settings.railOpacity==0){
+                // Keep the extended alpha surface; removing it turns transparent
+                // D2D pixels black on some DWM configurations.
+                const int noNonClient=1;DwmSetWindowAttribute(r->glass.fin,2,&noNonClient,sizeof(noNonClient));
+                const int square=1;DwmSetWindowAttribute(r->glass.fin,DWMWA_WINDOW_CORNER_PREFERENCE,&square,sizeof(square));
+            }
             r->glass.dpi=vetro::dpiMonitor(m);r->text=r->glass.formato(11*r->glass.dpi);r->reserveSpace();
             rebuild(*r);rails.push_back(std::move(r));
         }
@@ -567,6 +574,7 @@ private:
     void drawProjection(vetro::Finestra& glass,Card& card,bool active,bool hovered,float alpha) const {
         auto project=Projection{card.rect,bool(settings.right)};
         const float d=glass.dpi;
+        const bool outlines=settings.background!=0||settings.cardOpacity>0;
         const int layers=std::min(3,int(card.windows.size())-1);
         for(int layer=layers;layer>0;--layer) {
             auto back=project;
@@ -575,7 +583,7 @@ private:
                 glass.pen->SetColor(stageFill(glass,.8f*alpha*settings.cardOpacity/100.f));
                 glass.rt->FillGeometry(path,glass.pen);
                 glass.pen->SetColor(D2D1::ColorF(.69f,.75f,.84f,.30f*alpha));
-                glass.rt->DrawGeometry(path,glass.pen,d);
+                if(outlines)glass.rt->DrawGeometry(path,glass.pen,d);
                 path->Release();
             }
         }
@@ -603,7 +611,7 @@ private:
             }
         }
         glass.pen->SetColor(active?D2D1::ColorF(.31f,.66f,1,alpha):D2D1::ColorF(.72f,.77f,.85f,(hovered?.55f:.24f)*alpha));
-        glass.rt->DrawGeometry(path,glass.pen,(active?2.f:1.f)*d);
+        if(outlines)glass.rt->DrawGeometry(path,glass.pen,(active?2.f:1.f)*d);
         path->Release();
         const RECT icon=projectedIcon(card.rect,d);
         if(card.icon)glass.rt->DrawBitmap(card.icon,{float(icon.left),float(icon.top),float(icon.right),float(icon.bottom)},alpha);
@@ -635,7 +643,7 @@ private:
             auto r=c.rect;D2D1_RECT_F f{float(r.left),float(r.top),float(r.right),float(r.bottom)};
             const float cardAlpha=std::clamp(settings.cardOpacity,0,100)/100.0f;
             v.pen->SetColor(stageFill(v,(hovered?1.f:.88f)*alpha*cardAlpha));v.rt->FillRoundedRectangle({f,8*d,8*d},v.pen);
-            if(active){v.pen->SetColor(D2D1::ColorF(.1f,.55f,1,alpha));v.rt->DrawRoundedRectangle({f,8*d,8*d},v.pen,2*d);}
+            if(active&&(settings.background!=0||settings.cardOpacity>0)){v.pen->SetColor(D2D1::ColorF(.1f,.55f,1,alpha));v.rt->DrawRoundedRectangle({f,8*d,8*d},v.pen,2*d);}
             if(c.bitmap){auto size=c.bitmap->GetPixelSize();RECT dest=r;dest.bottom-=int(25*d);dest=aspectFit(size.width,size.height,dest,false);v.rt->DrawBitmap(c.bitmap,{float(dest.left),float(dest.top),float(dest.right),float(dest.bottom)},alpha);}
             if(c.icon)v.rt->DrawBitmap(c.icon,{f.left+4*d,f.bottom-23*d,f.left+24*d,f.bottom-3*d},alpha);
             std::wstring label=w.name;if(c.windows.size()>1)label+=L" ("+std::to_wstring(c.current+1)+L"/"+std::to_wstring(c.windows.size())+L")";
