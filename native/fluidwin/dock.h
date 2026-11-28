@@ -1056,7 +1056,7 @@ private:
         Motore* owner=nullptr;
         ID2D1DeviceContext* rt=nullptr;ID2D1SolidColorBrush* pen=nullptr;
         IDXGISwapChain1* swap=nullptr;IDCompositionTarget* target=nullptr;
-        IDCompositionVisual* visual=nullptr;ID2D1Bitmap1* bitmap=nullptr;
+        IDCompositionVisual* visual=nullptr;IDCompositionEffectGroup* effect=nullptr;ID2D1Bitmap1* bitmap=nullptr;
         bool ready=false;double opacity=1;
         bool bind(){
             IDXGISurface* buffer=nullptr;
@@ -1084,8 +1084,8 @@ private:
             if(FAILED(result))return false;
             if(FAILED(owner->d2dev->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,&rt))||
                FAILED(owner->dcomp->CreateTargetForHwnd(fin,TRUE,&target))||
-               FAILED(owner->dcomp->CreateVisual(&visual)))return false;
-            visual->SetContent(swap);target->SetRoot(visual);
+               FAILED(owner->dcomp->CreateVisual(&visual))||FAILED(owner->dcomp->CreateEffectGroup(&effect)))return false;
+            visual->SetEffect(effect);visual->SetContent(swap);target->SetRoot(visual);
             if(!bind()||FAILED(rt->CreateSolidColorBrush(D2D1::ColorF(0,0,0,1),&pen)))return false;
             ready=SUCCEEDED(owner->dcomp->Commit());return ready;
         }
@@ -1095,7 +1095,7 @@ private:
             if(rt)rt->SetTarget(nullptr);if(bitmap){bitmap->Release();bitmap=nullptr;}
             if(swap&&SUCCEEDED(swap->ResizeBuffers(0,std::max(1,w),std::max(1,h),DXGI_FORMAT_UNKNOWN,0)))ready=bind();
         }
-        void alfa(double alpha){if(opacity==alpha)return;opacity=alpha;if(visual){visual->SetOpacity(float(alpha));owner->dcomp->Commit();}}
+        void alfa(double alpha){if(opacity==alpha)return;opacity=alpha;if(effect){effect->SetOpacity(float(alpha));owner->dcomp->Commit();}}
         bool inizia(float){
             if(!ready||!rt||!pen)return false;
             rt->BeginDraw();rt->SetTransform(D2D1::Matrix3x2F::Identity());rt->Clear(D2D1::ColorF(0,0,0,0));return true;
@@ -1107,8 +1107,8 @@ private:
             if(owner&&owner->dcomp)owner->dcomp->Commit();
             if(rt)rt->SetTarget(nullptr);
             if(bitmap)bitmap->Release();if(pen)pen->Release();if(rt)rt->Release();
-            if(visual)visual->Release();if(target)target->Release();if(swap)swap->Release();
-            bitmap=nullptr;pen=nullptr;rt=nullptr;visual=nullptr;target=nullptr;swap=nullptr;
+            if(effect)effect->Release();if(visual)visual->Release();if(target)target->Release();if(swap)swap->Release();
+            bitmap=nullptr;pen=nullptr;rt=nullptr;effect=nullptr;visual=nullptr;target=nullptr;swap=nullptr;
             vetro::Finestra::chiudi();
         }
     };

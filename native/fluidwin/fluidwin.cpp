@@ -4325,7 +4325,9 @@ static LRESULT CALLBACK procMessaggi(HWND h, UINT m, WPARAM w, LPARAM l) {
             return 0;
         case WM_APRI_LAUNCHER: if (gDockOk) gDock.apriLauncher(); return 0;
         case WM_HOTKEY:
-            if(gImpostazioni.capturingShortcut())return 0;
+            if(gImpostazioni.capturingShortcut()){
+                gImpostazioni.captureChord({UINT(LOWORD(l))&UINT(MOD_CONTROL|MOD_SHIFT|MOD_ALT|MOD_WIN),UINT(HIWORD(l))});return 0;
+            }
             if(w==TASTO_PRIMO_PIANO)primoPiano();
             else if(gCaptureHotkey.matches(w)||gRecordHotkey.matches(w))openCaptureTool(gRecordHotkey.matches(w));
             else if(gPauseHotkey.matches(w))pauseCaptureTool();

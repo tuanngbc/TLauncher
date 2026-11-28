@@ -320,6 +320,14 @@ public:
     std::function<bool(int,shortcuts::Key)> captureShortcutChanged;
     bool capturingShortcut()const{return captureListening>=0;}
     int captureListening=-1;
+    bool captureChord(shortcuts::Key next){
+        if(captureListening<0||!shortcuts::valid(next))return false;
+        const int index=captureListening;captureListening=-1;
+        if(!captureShortcutChanged||!captureShortcutChanged(index,next)){
+            MessageBoxW(v.fin,clockText(L"Phím tắt bị trùng. Giữ nguyên phím cũ.",L"Shortcut conflict. Previous shortcut preserved."),L"TLauncher",MB_OK|MB_ICONINFORMATION);
+        }else{valori().captureKeys[index]=next;salva();}
+        disegna();return true;
+    }
 
 #ifdef TLAUNCHER_NATIVE_CI
     bool ciReady()const{return aperta&&morph==0;}
@@ -410,6 +418,7 @@ public:
 
     // aperte dal centro di controllo: rientrano nel suo rettangolo (poi lo riaprono); altrimenti si nascondono
     void chiudi() {
+        captureListening=-1;
         if (aperta && daCentro && tornaAlCentro && v.fin && IsWindowVisible(v.fin)) {
             if (morph == 0) { GetWindowRect(v.fin, &rA); giraMorph(-1); }   // (spostata trascinandola: rientra da li')
             else if (morph > 0) giraMorph(-1);
@@ -456,11 +465,7 @@ public:
                 ((GetKeyState(VK_MENU)&0x8000)?MOD_ALT:0)|((GetKeyState(VK_SHIFT)&0x8000)?MOD_SHIFT:0)|
                 (((GetKeyState(VK_LWIN)|GetKeyState(VK_RWIN))&0x8000)?MOD_WIN:0)),UINT(w)};
             if(!shortcuts::valid(next))return true;
-            const int index=captureListening;captureListening=-1;
-            if(!captureShortcutChanged||!captureShortcutChanged(index,next)){
-                MessageBoxW(hw,clockText(L"Phím tắt bị trùng. Giữ nguyên phím cũ.",L"Shortcut conflict. Previous shortcut preserved."),L"TLauncher",MB_OK|MB_ICONINFORMATION);
-            }else{valori().captureKeys[index]=next;salva();}
-            disegna();return true;
+            captureChord(next);return true;
         }
         r = 0;
         switch (m) {
@@ -571,6 +576,7 @@ public:
                 clic(zonaIn((float)GET_X_LPARAM(l), (float)GET_Y_LPARAM(l)));
                 return true;
             case WM_CAPTURECHANGED: scrollDrag=0; if (trascina >= 0) { trascina = -1; salva(); disegna(); } return true;
+            case WM_KILLFOCUS:if(captureListening>=0){captureListening=-1;disegna();}return true;
             case WM_KEYDOWN:
                 if(!morph&&(w==VK_PRIOR||w==VK_NEXT||w==VK_HOME||w==VK_END)&&
                     (sezione!=S_WALLPAPER||GetKeyState(VK_CONTROL)<0)){
