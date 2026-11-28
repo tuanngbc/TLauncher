@@ -370,6 +370,8 @@ public:
     RECT ciCollapsedBounds()const{return aSchermo(collapsedBar());}
     bool ciAnchor(RECT& r){return rettIcona(0,r);}
     void ciBorder(){controllaBordo();}
+    void ciAppearance(int radius,bool dark){dockRadius=radius;coloreAuto=false;fondoScuro=dark;coloreFondo=dark?D2D1::ColorF(.12f,.12f,.14f):D2D1::ColorF(1,1,1);dirty=true;}
+    void ciRestoreAppearance(){dockRadius=-1;coloreAuto=true;dirty=true;}
 #endif
     // riduzione a icona col genio di FluidWin (clic sull'icona dell'app gia' in primo piano); false = non possibile
     bool (*riduci)(HWND) = nullptr;
@@ -1047,12 +1049,75 @@ private:
         return true;
     }
 
+    // Per-display composition surface, sharing the primary D2D/D3D/DComp
+    // devices. An HWND render target paints an opaque rectangle around the
+    // magnified icons; use the same premultiplied composition path as main Dock.
+    struct DockSurface:vetro::Finestra {
+        Motore* owner=nullptr;
+        ID2D1DeviceContext* rt=nullptr;ID2D1SolidColorBrush* pen=nullptr;
+        IDXGISwapChain1* swap=nullptr;IDCompositionTarget* target=nullptr;
+        IDCompositionVisual* visual=nullptr;ID2D1Bitmap1* bitmap=nullptr;
+        bool ready=false;double opacity=1;
+        bool bind(){
+            IDXGISurface* buffer=nullptr;
+            if(!swap||FAILED(swap->GetBuffer(0,IID_PPV_ARGS(&buffer))))return false;
+            const auto properties=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));
+            const auto result=rt->CreateBitmapFromDxgiSurface(buffer,&properties,&bitmap);buffer->Release();
+            if(FAILED(result))return false;rt->SetTarget(bitmap);return true;
+        }
+        bool crea(const wchar_t* name,WNDPROC proc,void* state,bool activate,int corners,bool acrylic){
+            if(!vetro::Finestra::crea(name,proc,state,activate,corners,acrylic))return false;
+            if(vetro::Finestra::pen){vetro::Finestra::pen->Release();vetro::Finestra::pen=nullptr;}
+            if(vetro::Finestra::rt){vetro::Finestra::rt->Release();vetro::Finestra::rt=nullptr;}
+            SetWindowLongPtrW(fin,GWL_EXSTYLE,(GetWindowLongPtrW(fin,GWL_EXSTYLE)&~WS_EX_LAYERED)|WS_EX_NOREDIRECTIONBITMAP);
+            MARGINS margins{};DwmExtendFrameIntoClientArea(fin,&margins);
+            IDXGIDevice* device=nullptr;IDXGIAdapter* adapter=nullptr;IDXGIFactory2* factory=nullptr;
+            HRESULT result=owner->dev->QueryInterface(IID_PPV_ARGS(&device));
+            if(SUCCEEDED(result))result=device->GetAdapter(&adapter);
+            if(SUCCEEDED(result))result=adapter->GetParent(IID_PPV_ARGS(&factory));
+            DXGI_SWAP_CHAIN_DESC1 desc{};desc.Width=desc.Height=1;desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
+            desc.SampleDesc.Count=1;desc.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;desc.BufferCount=2;
+            desc.SwapEffect=DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;desc.AlphaMode=DXGI_ALPHA_MODE_PREMULTIPLIED;
+            if(SUCCEEDED(result))result=factory->CreateSwapChainForComposition(owner->dev,&desc,nullptr,&swap);
+            if(factory)factory->Release();if(adapter)adapter->Release();if(device)device->Release();
+            if(FAILED(result))return false;
+            if(FAILED(owner->d2dev->CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE,&rt))||
+               FAILED(owner->dcomp->CreateTargetForHwnd(fin,TRUE,&target))||
+               FAILED(owner->dcomp->CreateVisual(&visual)))return false;
+            visual->SetContent(swap);target->SetRoot(visual);
+            if(!bind()||FAILED(rt->CreateSolidColorBrush(D2D1::ColorF(0,0,0,1),&pen)))return false;
+            ready=SUCCEEDED(owner->dcomp->Commit());return ready;
+        }
+        void posiziona(int x,int y,int w,int h){
+            SetWindowPos(fin,HWND_TOPMOST,x,y,w,h,SWP_NOACTIVATE);
+            if(w==W&&h==H)return;W=w;H=h;ready=false;
+            if(rt)rt->SetTarget(nullptr);if(bitmap){bitmap->Release();bitmap=nullptr;}
+            if(swap&&SUCCEEDED(swap->ResizeBuffers(0,std::max(1,w),std::max(1,h),DXGI_FORMAT_UNKNOWN,0)))ready=bind();
+        }
+        void alfa(double alpha){if(opacity==alpha)return;opacity=alpha;if(visual){visual->SetOpacity(float(alpha));owner->dcomp->Commit();}}
+        bool inizia(float){
+            if(!ready||!rt||!pen)return false;
+            rt->BeginDraw();rt->SetTransform(D2D1::Matrix3x2F::Identity());rt->Clear(D2D1::ColorF(0,0,0,0));return true;
+        }
+        void finisci(){if(SUCCEEDED(rt->EndDraw())){swap->Present(1,0);owner->dcomp->Commit();}ValidateRect(fin,nullptr);}
+        void chiudi(){
+            ready=false;
+            if(target)target->SetRoot(nullptr);if(visual)visual->SetContent(nullptr);
+            if(owner&&owner->dcomp)owner->dcomp->Commit();
+            if(rt)rt->SetTarget(nullptr);
+            if(bitmap)bitmap->Release();if(pen)pen->Release();if(rt)rt->Release();
+            if(visual)visual->Release();if(target)target->Release();if(swap)swap->Release();
+            bitmap=nullptr;pen=nullptr;rt=nullptr;visual=nullptr;target=nullptr;swap=nullptr;
+            vetro::Finestra::chiudi();
+        }
+    };
     // Secondary presentations share every app record and pixel cache, while
     // their geometry, mouse state and paint resources belong to each display.
     struct ExtraDock {
         Motore* owner;
         HMONITOR display;
-        ::vetro::Finestra surface;
+        DockSurface surface;
         RECT monitorRect{},bounds{},bar{},screenRect{},glassBounds{};int glassRadius=-1,glassAlpha=-1;
         D2D1_ROUNDED_RECT shape{};
         std::vector<std::pair<size_t,RECT>> slots,restSlots;
@@ -1084,7 +1149,7 @@ private:
             dragging=false;pressed=-1;pressedIdentity.clear();
             if(GetCapture()==surface.fin)ReleaseCapture();wake();
         }
-        explicit ExtraDock(Motore* o,HMONITOR m):owner(o),display(m){}
+        explicit ExtraDock(Motore* o,HMONITOR m):owner(o),display(m){surface.owner=o;}
         ~ExtraDock(){vetro::fermaBattito(surface.fin,pulse);KillTimer(surface.fin,pulse);
             if(drop){RevokeDragDrop(surface.fin);drop->Release();}preview.chiudi();
             if(glass){DestroyWindow(glass);}
@@ -1316,6 +1381,12 @@ private:
                     brush->SetColor(D2D1::ColorF(.1f,.58f,.95f,opacity));
                     const float q=(local.right-local.left)*.22f;
                     for(float x:{cx-q-1,cx+1})for(float y:{cy-q-1,cy+1})rt->FillRectangle({x,y,x+q,y+q},brush);
+                }else if(v.avvio==AVVIO_CONTROLLO||v.avvio==AVVIO_CESTINO){
+                    auto* oldContext=owner->dc;auto* oldBrush=owner->pennello;const float oldDpi=owner->dpi;
+                    owner->dc=rt;owner->pennello=brush;owner->dpi=surface.dpi;
+                    if(v.avvio==AVVIO_CONTROLLO)owner->disegnaIconaControllo(local,opacity,surface.scuro);
+                    else owner->disegnaIconaCestino(local,opacity,surface.scuro,owner->dropSopra==int(i));
+                    owner->dc=oldContext;owner->pennello=oldBrush;owner->dpi=oldDpi;
                 }else{
                     brush->SetColor(surface.inchiostro(.32f*opacity));rt->FillRoundedRectangle({local,5,5},brush);
                 }

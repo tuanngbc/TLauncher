@@ -60,6 +60,13 @@ static int phase3DockContracts(std::ostream& report,const std::filesystem::path&
         gDock.impostaSpazio(true);
         gDock.controllaFinestre(true);
         if(!await([&]{return gDock.ciCollapse()<.001&&!gDock.serveFotogramma();}))return 181;
+        if(edge==0){
+            for(int radius:{0,8,24,64})for(bool dark:{false,true}){
+                gDock.ciAppearance(radius,dark);pump(80);DwmFlush();
+                if(!phase3Snapshot(gDock.icone,evidence/(L"phase3-main-expanded-radius-"+std::to_wstring(radius)+(dark?L"-dark.bmp":L"-light.bmp"))))return 200;
+            }
+            gDock.ciRestoreAppearance();pump(80);
+        }
         ShowWindow(source, SW_MAXIMIZE);
         SetForegroundWindow(source);
         gDock.controllaFinestre(true);
@@ -146,6 +153,10 @@ static int phase3Contracts(std::ostream& report,const std::filesystem::path& evi
             if(lang==testi::INGLESE&&(reference.size.cx!=clock.ciSize.cx||reference.size.cy!=clock.ciSize.cy||reference.pixels!=clock.ciPixels))return 196;
             report<<"CLOCK_ACTUAL_FACES=Steelfish Rg,la Compagnie des Ombres SCALE="<<scale<<" LANGUAGE="<<lang<<" GLYPH_LINKED_RUNS="<<clock.ciFallbacks<<"\n";
         }
+        appearance.style=1;appearance.scale=100;testi::lingua()=testi::INGLESE;clock.configure(appearance,false,true);
+        if(clock.ciFaces.empty()||_wcsicmp(clock.ciFaces[0].c_str(),L"Gravity"))return 195;
+        clockreference::save({clock.ciSize,clock.ciPixels},evidence/L"clock-compact-gravity-actual.bmp");
+        report<<"CLOCK_ACTUAL_COMPACT_FAMILY=Gravity (Gravity-Light.ttf)\n";
         clock.stop();testi::lingua()=locale;
         report<<"CLOCK_V102_FROZEN_EN_PIXEL_PARITY=PASS\nCLOCK_VI_GLYPH_LINK_VISUAL_COMPARISON=EXPORTED_OWNER_UAT_PENDING\n";
     }

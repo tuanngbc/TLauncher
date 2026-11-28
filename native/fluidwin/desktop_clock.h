@@ -212,7 +212,8 @@ private:
         const bool classic=config.style==0;
         const wchar_t* straight=config.font.empty()?(classic?L"Steelfish Rg":L"Gravity"):config.font.c_str();
         const wchar_t* script=config.font.empty()&&classic?L"la Compagnie des Ombres":straight;
-        struct Run {const wchar_t* text;HFONT font;COLORREF color;RECT rect;SCRIPT_STRING_ANALYSIS shaping=nullptr;};
+        struct Accent {size_t index;wchar_t mark;};
+        struct Run {std::wstring text;HFONT font;COLORREF color;RECT rect;SCRIPT_STRING_ANALYSIS shaping=nullptr;std::vector<Accent> accents;};
         std::vector<Run> runs;
         RECT canvas{0,0,LONG(320*scale),LONG((config.date?(classic?230:135):105)*scale)};
         const auto layout=[&](const wchar_t* value,const wchar_t* face,int size,int base,COLORREF color){
@@ -225,14 +226,27 @@ private:
             std::vector<WORD> glyphs(wcslen(value));
             const DWORD glyphResult=GetGlyphIndicesW(dc,value,int(glyphs.size()),glyphs.data(),GGI_MARK_NONEXISTING_GLYPHS);
             SCRIPT_STRING_ANALYSIS shaping=nullptr;
+            std::wstring rendered=value;std::vector<Accent> accents;
             const bool missing=glyphResult==GDI_ERROR||std::find(glyphs.begin(),glyphs.end(),WORD(0xffff))!=glyphs.end();
-            if(missing)ScriptStringAnalyse(dc,value,int(wcslen(value)),0,-1,SSA_GLYPHS|SSA_FALLBACK|SSA_LINK,0,nullptr,nullptr,nullptr,nullptr,nullptr,&shaping);
+            if(missing&&testi::attuale()==testi::VIETNAMITA){
+                const int n=NormalizeString(NormalizationD,value,int(wcslen(value)),nullptr,0);
+                if(n>0){
+                    std::wstring decomposed(size_t(n),L'\0');
+                    const int count=NormalizeString(NormalizationD,value,int(wcslen(value)),decomposed.data(),n);
+                    if(count>0){rendered.clear();for(int i=0;i<count;++i){
+                        const wchar_t c=decomposed[i];
+                        if(c>=0x300&&c<=0x36f){if(!rendered.empty())accents.push_back({rendered.size()-1,c});}
+                        else if(c==L'Đ'||c==L'đ'){rendered+=c==L'Đ'?L'D':L'd';accents.push_back({rendered.size()-1,0x335});}
+                        else rendered+=c;
+                    }}
+                }
+            }else if(missing)ScriptStringAnalyse(dc,value,int(wcslen(value)),0,-1,SSA_GLYPHS|SSA_FALLBACK|SSA_LINK,0,nullptr,nullptr,nullptr,nullptr,nullptr,&shaping);
             if(shaping)extent=*ScriptString_pSize(shaping);
-            else GetTextExtentPoint32W(dc,value,int(wcslen(value)),&extent);
-            const auto message=std::wstring(L"clock requested=")+face+L" selected="+selected+(missing?L" glyph-link=required":L" glyph-link=none");
+            else GetTextExtentPoint32W(dc,rendered.c_str(),int(rendered.size()),&extent);
+            const auto message=std::wstring(L"clock requested=")+face+L" selected="+selected+(accents.empty()?(missing?L" glyph-link=required":L" glyph-link=none"):L" glyph-link=decomposed-native-diacritics");
             if(diagnostic&&loggedFaces.insert(message).second)diagnostic(message);
 #ifdef TLAUNCHER_NATIVE_CI
-            ciFaces.push_back(selected);if(shaping)++ciFallbacks;
+            ciFaces.push_back(selected);if(shaping||!accents.empty())++ciFallbacks;
 #endif
             SelectObject(dc,previous);
             const LONG halfWidth=(std::max(1L,extent.cx)+1)/2;
@@ -241,7 +255,7 @@ private:
             const LONG padding=classic?std::max(8,px):8;
             canvas.left=std::min(canvas.left,rect.left-padding);canvas.top=std::min(canvas.top,rect.top-padding);
             canvas.right=std::max(canvas.right,rect.right+padding);canvas.bottom=std::max(canvas.bottom,rect.bottom+padding);
-            runs.push_back({value,font,color,rect,shaping});
+            runs.push_back({std::move(rendered),font,color,rect,shaping,std::move(accents)});
         };
         layout(hour,straight,classic?100:70,0,config.color);
         if(config.date){
@@ -270,7 +284,38 @@ private:
                 const SIZE extent=*ScriptString_pSize(run.shaping);
                 ScriptStringOut(run.shaping,(rect.left+rect.right-extent.cx)/2,(rect.top+rect.bottom-extent.cy)/2,0,nullptr,0,0,FALSE);
                 ScriptStringFree(&run.shaping);
-            }else DrawTextW(dc,run.text,-1,&rect,DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX|DT_NOCLIP);
+            }else{
+                DrawTextW(dc,run.text.c_str(),-1,&rect,DT_CENTER|DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX|DT_NOCLIP);
+                if(!run.accents.empty()){
+                    TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SIZE full{};GetTextExtentPoint32W(dc,run.text.c_str(),int(run.text.size()),&full);
+                    const int origin=(rect.left+rect.right-full.cx)/2;
+                    const int baseline=(rect.top+rect.bottom-metrics.tmHeight)/2+metrics.tmAscent;
+                    const MAT2 identity{{0,1},{0,0},{0,0},{0,1}};
+                    HPEN accentPen=CreatePen(PS_SOLID,std::max(1,int(metrics.tmHeight*.025)),run.color);
+                    const auto oldPen=SelectObject(dc,accentPen);
+                    auto line=[&](int x1,int y1,int x2,int y2){MoveToEx(dc,x1,y1,nullptr);LineTo(dc,x2,y2);};
+                    for(const auto& accent:run.accents){
+                        SIZE prefix{};GetTextExtentPoint32W(dc,run.text.c_str(),int(accent.index),&prefix);
+                        GLYPHMETRICS glyph{};if(GetGlyphOutlineW(dc,run.text[accent.index],GGO_METRICS,&glyph,0,nullptr,&identity)==GDI_ERROR)continue;
+                        const int x=origin+prefix.cx+glyph.gmptGlyphOrigin.x+int(glyph.gmBlackBoxX)/2;
+                        const int inkTop=baseline-glyph.gmptGlyphOrigin.y;
+                        const int unit=std::max(2,int(metrics.tmHeight*.055));
+                        const int y=inkTop-unit,half=std::max(unit,int(glyph.gmBlackBoxX)/3);
+                        switch(accent.mark){
+                            case 0x301:line(x-unit,y-unit,x+unit,y-2*unit);break;
+                            case 0x300:line(x-unit,y-2*unit,x+unit,y-unit);break;
+                            case 0x302:line(x-half,y,x,y-unit);line(x,y-unit,x+half,y);break;
+                            case 0x306:line(x-half,y-unit,x-half/2,y);line(x-half/2,y,x+half/2,y);line(x+half/2,y,x+half,y-unit);break;
+                            case 0x303:line(x-half,y,x-half/2,y-unit);line(x-half/2,y-unit,x+half/2,y);line(x+half/2,y,x+half,y-unit);break;
+                            case 0x309:line(x,y-2*unit,x+unit,y-2*unit);line(x+unit,y-2*unit,x+unit,y-unit);line(x+unit,y-unit,x,y);break;
+                            case 0x31b:line(x+half,inkTop+unit,x+half+unit,inkTop);line(x+half+unit,inkTop,x+half+unit,inkTop-unit);break;
+                            case 0x323:{const int bottom=baseline-glyph.gmptGlyphOrigin.y+int(glyph.gmBlackBoxY)+unit;line(x,bottom,x+1,bottom);break;}
+                            case 0x335:line(x-half,baseline-int(glyph.gmBlackBoxY)/2,x+half,baseline-int(glyph.gmBlackBoxY)/2);break;
+                        }
+                    }
+                    SelectObject(dc,oldPen);DeleteObject(accentPen);
+                }
+            }
             SelectObject(dc,previous);DeleteObject(run.font);
         }
         GdiFlush();
